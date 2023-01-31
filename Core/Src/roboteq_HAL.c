@@ -251,7 +251,7 @@ float P3[2];
 float P2[2]; 
 float P1[2]; 
 float MAX_LINEAR_SPEED = 1.0;
-float MAX_ANGULAR_SPEED = 3.0;
+float MAX_ANGULAR_SPEED = 5.0;
 
 struct{
 	float2int angle;
@@ -580,6 +580,7 @@ float Y0[300];
 float Y1[300];
 float linear_speed_profile[300];
 float debugleft_rpm, debugright_rpm;
+float hypot_distance; 
 float Kp_rho = 9.0;
 float Kp_alpha= 15.0;
 float Kp_beta = 3.0; 
@@ -1652,7 +1653,7 @@ void Pc_Cmd_Process(){
 				remaining_distance = 1.0;
 				if(pose.f_dis.f < 0.01){
 				Calculate_Static_Delta_Distance();}
-				Local_Path_Planning();
+				Local_Path_Planning(); //Create the control points of the AGV 
         	}else{
         		// posecmd_seq++;
         		// if(posecmd_snd[posecmd_seq] != QR_SKIP){
@@ -2289,14 +2290,15 @@ void Generate_Bezier_Points(float x, float y, float theta, float travel_distance
 #endif //New method to generate the control points*/
 	P0[0] = x; 
 	P0[1] = y; 
-	P3[0] = x + travel_distance; 
+	//P3[0] = x + travel_distance;
+	P3[0] = travel_distance;
 	P3[1] = 0; 
 	double yaw = theta * ONE_DEGREE_RADIAN; 
 	double x_offset = 0.3 * travel_distance;
-	double y_offset = x_offset * yaw; 
+	double y_offset = x_offset * yaw; //Small angle can be neglected 
 	P1[0] = P0[0] + x_offset; 
 	P1[1] = P0[1] + y_offset; 
-	P2[0] = P0[0] + 2 * x_offset; 
+	P2[0] = P0[0] + 2.2 * x_offset; 
 	P2[1] = 0; 
 	controlPoints[0] = P1[0];
 	controlPoints[1] = P1[1];
@@ -2390,11 +2392,12 @@ float ploynomial(float t, int n, int stage) {
 // Calculate a point on the Bezier curve
 void bezierCurve(float t, float* point, float* controlPoints)
 {
+	/*
     float s = 1.0 - t;
     point[0] = 0; 
     point[1] = 0;
 	
-/*
+
     for (int i = 0; i <= BEZIER_ORDER; ++i)
     {
         int bin = binomialCoeff(BEZIER_ORDER, i);
@@ -2573,6 +2576,17 @@ UPDATE			:2023/1/30
 double travel_time_est(struct convolution_params params) { //Calculate the estimated travel time  
 	return params.t0 + params.t1 + params.t2; 
 } 
+/************************************************************************************
+FUNCTION		:get_distance
+DESCRIPTION		:calculate the distance between two given points
+INPUT			:points coordinates
+OUTPUT			:distance
+UPDATE			:2023/1/30
+*************************************************************************************/
+float get_distance(double x1,double y1,double x2,double y2) {
+	return sqrt(pow((x1 - x2),2) + pow((y1 - y2),2));
+}
+
 
 /************************************************************************************
 FUNCTION		:Motion_Action
@@ -2640,15 +2654,18 @@ void Motion_Action()
 		    	//double rho = 0.0,v=0.0,w=0.0,x_diff=0.0;
 		    	last_point[0] = pose.x.f; //Also the start points 
 		    	last_point[1] = pose.y.f;
-		    	point[0] = 0.0;point[1] = 0.0;
+		    	//point[0] = 0.0;point[1] = 0.0;
+				point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
 		    	double last_angle = pose.theta.f; 
-
-				agv_constraint.Sn = 1; 
+				
+				hypot_distance = get_distance(point[0], point[1], 1, 0); 
+				agv_constraint.Sn = hypot_distance; //hypot distance between the points
+				//agv_constraint.Sn = 1; //QR distance
 				agv_constraint.v_f = 0; 
-				agv_constraint.v_max = 0.6; 
+				agv_constraint.v_max = 0.6; //Current max speed allowed 
 				agv_constraint.jerk_constraint = 3; 
 				agv_constraint.accleration_constraint = 0.395; 
-				agv_constraint.v_s = pose.velocity.linear_v.f; 
+				agv_constraint.v_s = pose.velocity.linear_v.f; ,
 
 				convol_params = generation_convolute_params(agv_constraint); 
 				travel_time = travel_time_est(convol_params); 
@@ -2706,8 +2723,6 @@ void Motion_Action()
 		    {
 		        float t = (float)i / (float)total_points_count;
 		        bezierCurve(t, point, controlPoints);
-		        //change in theta
-		        //dtheta = atan(point[1]/point[0]);
 		        dtheta2 = atan2((point[1]-last_point[1]),(point[0]-last_point[0]));// - last_angle;
 		        if (i==0){
 		        	 dtheta2 = atan2(last_point[1],last_point[0]);
@@ -2715,7 +2730,6 @@ void Motion_Action()
 		        last_dtheta2 = dtheta2;
 		        //central angular velocity omega
 		        ang_vel = dtheta2/t;
-		        ang_vel2 = dtheta2/t;
 		        last_angle = dtheta2; //Saving the last theta value
 		        //Robot velocity
 				r_linvel = linear_speed_profile[i]; 
