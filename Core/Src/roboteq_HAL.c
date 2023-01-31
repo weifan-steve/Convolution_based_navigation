@@ -2294,7 +2294,7 @@ void Generate_Bezier_Points(float x, float y, float theta, float travel_distance
 	P3[0] = travel_distance;
 	P3[1] = 0; 
 	double yaw = theta * ONE_DEGREE_RADIAN; 
-	double x_offset = 0.3 * travel_distance;
+	double x_offset = 0.3 * (travel_distance-x);
 	double y_offset = x_offset * yaw; //Small angle can be neglected 
 	P1[0] = P0[0] + x_offset; 
 	P1[1] = P0[1] + y_offset; 
@@ -2658,14 +2658,14 @@ void Motion_Action()
 				point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
 		    	double last_angle = pose.theta.f; 
 				
-				hypot_distance = get_distance(point[0], point[1], 1, 0); 
-				agv_constraint.Sn = hypot_distance; //hypot distance between the points
-				//agv_constraint.Sn = 1; //QR distance
+				//hypot_distance = get_distance(point[0], point[1], 1, 0); 
+				//agv_constraint.Sn = hypot_distance; //hypot distance between the points
+				agv_constraint.Sn = 1; //QR distance
 				agv_constraint.v_f = 0; 
 				agv_constraint.v_max = 0.6; //Current max speed allowed 
 				agv_constraint.jerk_constraint = 3; 
 				agv_constraint.accleration_constraint = 0.395; 
-				agv_constraint.v_s = pose.velocity.linear_v.f; ,
+				agv_constraint.v_s = pose.velocity.linear_v.f;
 
 				convol_params = generation_convolute_params(agv_constraint); 
 				travel_time = travel_time_est(convol_params); 
