@@ -160,7 +160,7 @@ void StartActionTask(void const * argument);
 void StartIOControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
-extern uint8_t Roboteq_Init (void);
+extern uint8_t Roboteq_Init ();
 extern uint8_t Pc_Init();
 extern uint8_t Deck_Init();
 extern void IO_Control();

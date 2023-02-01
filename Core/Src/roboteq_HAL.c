@@ -185,7 +185,7 @@ const float r_coefficient_1[6][12] = {
 
 /* Private variables ---------------------------------------------------------*/
 uint8_t open_loop=FALSE	;		// false
-int32_t MAX_POSSIBLE_SIZE = 300;
+int32_t MAX_POSSIBLE_SIZE = 400;
 
 struct{
 	float2int wheel_circumference;
@@ -565,20 +565,20 @@ float r_linvel;
 float point[2];
 float last_point[2];
 float dtheta,dtheta2, last_dtheta2;
-float Angveldebug[300];
-float Linveldebug[300];
-float rhodebug[300];
-float vdebug[300];
-float wdebug[300];
-float xpointdebug[300];
-float ypointdebug[300];
-float rpmrightdebug[300];
-float rpmleftdebug[300];
-float dthetadebug[300];
-float dthetadebug2[300];
-float Y0[300];
-float Y1[300];
-float linear_speed_profile[300];
+float Angveldebug[400];
+float Linveldebug[400];
+float rhodebug[400];
+float vdebug[400];
+float wdebug[400];
+float xpointdebug[400];
+float ypointdebug[400];
+float rpmrightdebug[400];
+float rpmleftdebug[400];
+float dthetadebug[400];
+float dthetadebug2[400];
+float Y0[400];
+float Y1[400];
+float linear_speed_profile[400];
 float debugleft_rpm, debugright_rpm;
 float hypot_distance; 
 float Kp_rho = 9.0;
