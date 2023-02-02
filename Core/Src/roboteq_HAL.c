@@ -2665,7 +2665,7 @@ void Motion_Action()
 				agv_constraint.v_max = 0.6; //Current max speed allowed 
 				agv_constraint.jerk_constraint = 3; 
 				agv_constraint.accleration_constraint = 0.395; 
-				agv_constraint.v_s = pose.velocity.linear_v.f; ,
+				agv_constraint.v_s = pose.velocity.linear_v.f;
 
 				convol_params = generation_convolute_params(agv_constraint); 
 				travel_time = travel_time_est(convol_params); 
