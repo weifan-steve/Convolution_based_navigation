@@ -297,7 +297,7 @@ typedef union
 #define QR_SKIP (0)			// QR skip
 #define TIME_INTERVAL2 (2.1) // 2m/(1m/s)=2 seconds + 4*DELTA_TIME
 #define TIME_INTERVAL1 (1.1) // 2m/(1m/s)=2 seconds + 4*DELTA_TIME
-#define DELTA_TIME (0.025)
+#define DELTA_TIME (0.025) //40 points per secs 
 #define DELTA_DEC_TIME (0.05)
 #define ACCEL_TICKS (5)
 #define ONEDEDREE_RADIAN (0.01745329252)

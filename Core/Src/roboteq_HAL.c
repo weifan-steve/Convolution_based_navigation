@@ -185,7 +185,8 @@ const float r_coefficient_1[6][12] = {
 
 /* Private variables ---------------------------------------------------------*/
 uint8_t open_loop=FALSE	;		// false
-int32_t MAX_POSSIBLE_SIZE = 300;
+int32_t MAX_POSSIBLE_SIZE = 300; 
+int32_t SAMPLES_PER_SECOND = 1 / DELTA_TIME; 
 
 struct{
 	float2int wheel_circumference;
@@ -240,6 +241,7 @@ struct points {
 struct pos pose;
 
 struct velo velocity;
+struct velo correction_velocity;
 
 struct design_params agv_constraint; //Physical constraints
 
@@ -2658,22 +2660,22 @@ void Motion_Action()
 				point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
 		    	double last_angle = pose.theta.f; 
 				
-				hypot_distance = get_distance(point[0], point[1], 1, 0); 
-				agv_constraint.Sn = hypot_distance; //hypot distance between the points
-				//agv_constraint.Sn = 1; //QR distance
+				//hypot_distance = get_distance(point[0], point[1], 1, 0); 
+				//agv_constraint.Sn = hypot_distance; //hypot distance between the points
+				agv_constraint.Sn = 1; //QR distance
 				agv_constraint.v_f = 0; 
-				agv_constraint.v_max = 0.6; //Current max speed allowed 
+				agv_constraint.v_max = 0.5; //Current max speed allowed 
 				agv_constraint.jerk_constraint = 3; 
-				agv_constraint.accleration_constraint = 0.395; 
+				agv_constraint.accleration_constraint = 0.55; 
 				agv_constraint.v_s = pose.velocity.linear_v.f;
 
 				convol_params = generation_convolute_params(agv_constraint); 
 				travel_time = travel_time_est(convol_params); 
-				int M1 = (int)(convol_params.t1 * 50);
-				int M2 = (int)(convol_params.t2 * 50);
+				int M1 = (int)(convol_params.t1 * SAMPLES_PER_SECOND);
+				int M2 = (int)(convol_params.t2 * SAMPLES_PER_SECOND);
 
 				for (int i = 0; i <= MAX_POSSIBLE_SIZE; i++) {
-					if (i <= (int)(convol_params.t0 * 50)) {
+					if (i <= (int)(convol_params.t0 * SAMPLES_PER_SECOND)) {
 						if (agv_constraint.v_s != 0) {
 							Y0[i] = convol_params.v0 - agv_constraint.v_s;
 						}
@@ -2681,7 +2683,7 @@ void Motion_Action()
 							Y0[i] = convol_params.v0;
 						}
 					}
-					else if (i <= (int)(travel_time * 50)) {
+					else if (i <= (int)(travel_time * SAMPLES_PER_SECOND)) {
 						if (agv_constraint.v_s != 0) {
 							Y0[i] = agv_constraint.v_f - agv_constraint.v_s;
 						}
@@ -2718,15 +2720,20 @@ void Motion_Action()
 					total_points_count += 1;
 				}
 
-
+				float real_time = 0; 
+				float T_max = travel_time; 
 			    for (int i = 0; i < total_points_count; ++i)
 		    {
-		        float t = (float)i / (float)total_points_count;
+		        //float t = (float)i / (float)total_points_count;
+				float t = real_time / T_max; //normalized time
 		        bezierCurve(t, point, controlPoints);
-		        dtheta2 = atan2((point[1]-last_point[1]),(point[0]-last_point[0]));// - last_angle;
 		        if (i==0){
 		        	 dtheta2 = atan2(last_point[1],last_point[0]);
-		        }
+				}
+				else
+				{
+					dtheta2 = atan2((point[1] - last_point[1]), (point[0] - last_point[0]));
+				}
 		        last_dtheta2 = dtheta2;
 		        //central angular velocity omega
 		        ang_vel = dtheta2/t;
@@ -2765,17 +2772,22 @@ void Motion_Action()
 				}
 				Angveldebug[i] = ang_vel;
 				Linveldebug[i] = r_linvel;
-				Slowspeed_Update(); //Sending speed command to the motor
+				//Slowspeed_Update(); //Sending speed command to the motor 
+				Velocity2Rpm(r_linvel,ang_vel);
 				if (Send_Wheel_Command() != 1){
 					cmd_sts = PC_CMDSTS_ERROR;
 					printf("Wheel command sending error \n");
 					return;
 					}
-					cmd_sts = PC_CMDSTS_INPROGRESS;
-					Pose_Update();
-			    //theta = theta + w * t;
-		    }
 
+				cmd_sts = PC_CMDSTS_INPROGRESS;
+				Pose_Update();
+			    //theta = theta + w * t;
+				real_time = real_time + DELTA_TIME; 
+				//int time_interval = (int)(DELTA_TIME*1000);
+				HAL_Delay(25);//Delay by the delta_time millisecs. (one delta_time)
+		    }
+            /*
 			Pose_Update();
 			if(((static_delta_dis * delta_offset) > pose.f_dis.f)  && (pose.f_dis.f < 0.05)){
 			if((left - pose_start_enc_cnt + static_delta_dis * delta_offset * ticks_meter * ticks_offset) > pose_2final_enc_cnt){
@@ -2784,7 +2796,10 @@ void Motion_Action()
 				break;
 				}
 			}
-		    //}
+		    //}*/ 
+
+				//Velocity2Rpm(0, 0);
+				Pose_Update();
 
 			/*else{
 				Pose_Update();
@@ -2794,7 +2809,8 @@ void Motion_Action()
 				}
 			}*/
 
-		case MOTION_DEC:
+		case MOTION_DEC: //Post section cleanup of the states
+#if ORIGINAL_DEC_PROFILE
 #if LOG_DECK
 	matrix_d_rpm[log_d_i] = motion_dec_speed_l;
 	log_d_i++;
@@ -2841,9 +2857,11 @@ void Motion_Action()
 						motion_dec_speed_l = MOTION_STEP_SPEED;
 					}
 					if (motion_dec_speed_r > 0){
-						if(Absolute(motion_dec_speed_r)  > motion_speedr_dec_step){
+						if(Absolute(motion_dec_speed_r)  > motion_speedr_dec_step)
+						{
 							motion_dec_speed_r -= motion_speedr_dec_step;
-							if(Absolute(motion_dec_speed_r) < motion_speedr_dec_step){
+							if(Absolute(motion_dec_speed_r) < motion_speedr_dec_step)
+							{
 								motion_dec_speed_r = motion_speedr_dec_step;
 							}
 						}
@@ -2868,6 +2886,13 @@ void Motion_Action()
 					return;
 				}
 //			}
+#endif
+			Pose_Speed_Init(); 
+			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); 
+			motion_exec_state = MOTION_IDLE;
+			cmd_sts = PC_CMDSTS_COMPLETED;
+			end_left = left;
+			end_right = right;
 			Pose_Update();
 			break;
 
