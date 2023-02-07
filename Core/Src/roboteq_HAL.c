@@ -179,12 +179,7 @@ const float r_coefficient_1[6][12] = {
 };
 
 /* Private define ------------------------------------------------------------*/
-#define ONE_DEGREE_RADIAN 0.0174533; 
-//Section modes
-#define ONLY_ONE_METER 0;
-#define START_UP 1;
-#define MIDDLE 2;
-#define DEC 3;
+
 /* Private macro -------------------------------------------------------------*/
 
 
@@ -266,7 +261,8 @@ struct design_params agv_constraint; //Physical constraints
 
 struct convolution_params convol_params; 
 
-struct points points; 
+struct points starting_point; 
+struct points current_pose; 
 float P0[2]; 
 float P3[2]; 
 float P2[2]; 
@@ -2315,17 +2311,20 @@ void Generate_Bezier_Points(float x, float y, float theta, float travel_distance
 #endif //New method to generate the control points*/
 	P0[0] = x; 
 	P0[1] = y; 
-	P3[0] = x + travel_distance;
-	//P3[0] = travel_distance;
+	P3[0] = x + QR_INTERVAL_1;
+	//P3[0] = travel_distance+x;
 	//P3[1] = 0; 
 	double yaw = theta * ONE_DEGREE_RADIAN; 
-	double x_offset = 0.3 * (travel_distance+x);
+	double x_offset = 0.3 * (QR_INTERVAL_1+x);
+	//double x_offset = 0.3 * (travel_distance+x);
 	double y_offset = x_offset * yaw; //Small angle can be neglected 
+	//double target_y = -0.01 * P1[1]; 
+	double target_y = 0;
 	P1[0] = P0[0] + x_offset; 
 	P1[1] = P0[1] + y_offset; 
 	P2[0] = P0[0] + 2.2 * x_offset; 
-	P2[1] = -P1[1];
-	P3[1] = 0;
+	P2[1] = target_y;
+	P3[1] = target_y;
 	controlPoints[0] = P1[0];
 	controlPoints[1] = P1[1];
 	controlPoints[2] = P2[0];
@@ -2457,7 +2456,23 @@ void calc_control_command(double x_diff, double y_diff, double theta, double the
 	if (alpha > PI / 2 || alpha < -PI / 2) {
 	*v = -(*v);
 	}
+} 
+/************************************************************************************
+FUNCTION		:	get_current_pose
+DESCRIPTION		:	read current pose using the incremental method
+INPUT			:	starting_pose: the initial pose for the calculation 
+                    left_enc: left wheel encoder count 
+					right_enc: right wheel encoder count 
+OUTPUT			:	current_pose: current pose using the incremental method calculation 
+UPDATE			:	2022/12/27
+*************************************************************************************/
+struct points get_current_pose(struct points starting_pose, int left_enc, int right_enc) {
+	current_pose.x = starting_pose.x; 
+	current_pose.y = starting_pose.y; 
+	current_pose.yaw = starting_pose.yaw; 
 }
+
+
 
 /************************************************************************************
 FUNCTION		:	setVelocityProfile
@@ -2631,12 +2646,18 @@ struct correction_data pose_based_speed_correction(struct pos current_pose, stru
 FUNCTION		:x_correction_pid
 DESCRIPTION		:using the pid control to generate the Sn value of each travelling 
 INPUT			:pose data from the PC
-OUTPUT			:delta x and delta y value
+OUTPUT			:corrected Sn value for the 
 UPDATE			:2023/1/30
 *************************************************************************************/
-float x_correction_pid(float x_ideal,float x_err, float kp, float ki, float kd) {
+float x_correction_pid(float  x_ideal,float x_err, float kp, float ki, float kd) {
+	float sampling_time = x_ideal / pose.velocity.linear_v.f; 
 	err_sum += x_err; 
-	return x_ideal + kp * x_err + err_sum*ki; //The PID result of the corrected x
+	return x_ideal + kp * x_err + (err_sum*ki)/sampling_time; //The PID result of the corrected x
+} 
+
+float heading_pid(float heading_err, float kp, float ki, float kd) {
+	heading_err = heading_err * ONE_DEGREE_RADIAN; 
+	return heading_err * kp; 
 }
 
 
@@ -2652,7 +2673,7 @@ UPDATE			:2023/1/30
 void create_section_constraints(void) {
 	if (pose.c_dis.f == 1 && pose.f_dis.f == 0){//Only travel 1 meter
 		agv_constraint.section_type = ONLY_ONE_METER; 
-		agv_constraint.Sn = x_correction_pid(1.055,pose.x.f,-1.1,0,0); //Sn distance (1.055-kp*pose.x.f)
+		agv_constraint.Sn = x_correction_pid(1.025,pose.x.f,-2,-0.002,0); //Sn distance (1.055-kp*pose.x.f)
 		agv_constraint.v_f = 0;
 		agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
@@ -2661,27 +2682,27 @@ void create_section_constraints(void) {
 	}
 	else if (pose.f_dis.f != 0 && pose.c_dis.f == 1){//Travel multiple meters in start up section 
 		agv_constraint.section_type = START_UP;
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.0,0,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
 		agv_constraint.v_f = pose.velocity.linear_v.f;
-		agv_constraint.v_max = 0.6; //Current max speed allowed 
+		agv_constraint.v_max = 0.8; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
 		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
 		agv_constraint.v_s = 0;
 	}
 	else if (pose.f_dis.f != 0 && pose.c_dis.f != 1) {//Travel multiple meters in start up section 
 		agv_constraint.section_type = MIDDLE;
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.0,0,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
 		agv_constraint.v_f = pose.velocity.linear_v.f;
-		agv_constraint.v_max = 0.6; //Current max speed allowed 
+		agv_constraint.v_max = 0.8; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
 		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
 		agv_constraint.v_s = agv_constraint.v_f;
 	}
 	else if (pose.f_dis.f == 0 && pose.c_dis.f != 0) {
 		agv_constraint.section_type = DEC; 
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.0,0,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
 		agv_constraint.v_f = 0;
-		agv_constraint.v_max = 0.6; //Current max speed allowed 
+		agv_constraint.v_max = 0.8; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
 		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
 		agv_constraint.v_s = pose.velocity.linear_v.f;
@@ -2753,6 +2774,10 @@ void Motion_Action()
 		    	//double y = pose.y.f;
 		    	//double theta = pose.theta.f;
 		    	//double rho = 0.0,v=0.0,w=0.0,x_diff=0.0;
+				starting_point.x = pose.x.f; 
+				starting_point.y = pose.y.f; 
+				starting_point.yaw = pose.theta.f * ONE_DEGREE_RADIAN; 
+
 		    	last_point[0] = pose.x.f; //Also the start points 
 		    	last_point[1] = pose.y.f;
 		    	//point[0] = 0.0;point[1] = 0.0;
@@ -2823,23 +2848,29 @@ void Motion_Action()
 
 				float real_time = 0; 
 				float T_max = travel_time; 
-			    for (int i = 0; i < total_points_count; i++)
+			    for (int i = 0; i < total_points_count-1; i++)
 		        {
-		        float t = (float)i / (float)total_points_count;
+		        float t = (float)i / (float)total_points_count; 
+				float next_t = (float)(i + 1) / (float)total_points_count; 
 				//float t = real_time / T_max; //normalized time
-		        bezierCurve(t, point, controlPoints);
+		        bezierCurve(t, point, controlPoints); 
+				bezierCurve(next_t, next_point, controlPoints); 
 		        if (i==0){
-					 bezierCurve(real_time + DELTA_TIME, next_point, controlPoints); 
-					 dtheta2 = atan2(next_point[1], next_point[0]) - (pose.theta.f * ONEDEDREE_RADIAN); 
+					float first_heading = atan2((next_point[1] - pose.y.f), (next_point[0] - pose.x.f)); 
+					dtheta2 = first_heading - starting_point.yaw; 
+					last_angle = first_heading; 
 				}
 				else
-				{
-					dtheta2 = atan2((point[1] - last_point[1]), (point[0] - last_point[0]));
+				{   
+					float target_heading = atan2((next_point[1] - point[1]), (next_point[0] - point[0]));
+					dtheta2 = target_heading - last_angle; //Delta in the angle change
+					//dtheta2 = atan2((point[1] - last_point[1]), (point[0] - last_point[0]));
+					last_angle = target_heading; 
 				}
 		        last_dtheta2 = dtheta2;
 		        //central angular velocity omega
 		        ang_vel = dtheta2/5;
-		        last_angle = dtheta2; //Saving the last theta value
+		        //last_angle = dtheta2; //Saving the last theta value
 		        //Robot velocity
 				r_linvel = linear_speed_profile[i]; 
 		        //r_linvel2 = hypot(last_point[0]-point[0], last_point[0]-point[1]);
@@ -2984,11 +3015,16 @@ void Motion_Action()
 					cmd_sts = PC_CMDSTS_ERROR;
 					return;
 				}
-*/
-			Pose_Speed_Init(); 
-			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); 
+*/          if (agv_constraint.section_type == ONLY_ONE_METER || agv_constraint.section_type == DEC) 
+                {
+	            Pose_Speed_Init();
+				Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); //Halt the AGV if the section is ONLY_ONE_METER/DEC 
+                }
+                else
+                {
+	            Velocity2Rpm(linear_speed_profile[total_points_count - 1], 0); //Maintain the last speed when the section is MID/START_UP section
+                } 
 			motion_exec_state = MOTION_IDLE;
-			
 			if (Send_Wheel_Speed(pose.velocity.linear_v.f, pose.velocity.angular_v.f) != 1) {
 				printf("Wheel speed sending error \n");
 				cmd_sts = PC_CMDSTS_ERROR;

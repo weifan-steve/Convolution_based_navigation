@@ -323,4 +323,10 @@ typedef union
 
 #define VELCMD_TIMEOUT (30)
 
+#define ONE_DEGREE_RADIAN 0.0174533
+#define ONLY_ONE_METER 0
+#define START_UP 1
+#define MIDDLE 2
+#define DEC 3
+
 #endif /* roboteq_HAL_H_ */
