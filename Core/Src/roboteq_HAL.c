@@ -186,15 +186,18 @@ const float r_coefficient_1[6][12] = {
 /* Private variables ---------------------------------------------------------*/
 uint8_t open_loop=FALSE	;		// false
 int32_t MAX_POSSIBLE_SIZE = 300; 
-int32_t SAMPLES_PER_SECOND = 40; //(1s/DELTA_TIME) 
-float ACCERATE_CONSTRAINT_1_METER = 0.85;
+int32_t SAMPLES_PER_SECOND = 50; //(1s/DELTA_TIME) 
+float ACCERATE_CONSTRAINT_1_METER = 1.4;
 float ACCERATE_CONSTRAINT_MIDDLE = 0.10; 
-float ACCERATE_CONSTRAINT_DEC = 0.55; 
+float ACCERATE_CONSTRAINT_DEC = 0.6; 
 float kp = -1.0; 
 float ki = 0.0;
 float kd = 0.0;
 float last_travelling_time;
 float err_sum; 
+float real_curve_dist; 
+float ut[300];//ut list for the bezier curve
+float sampling_time = 0.020; 
 
 struct{
 	float2int wheel_circumference;
@@ -262,11 +265,7 @@ struct design_params agv_constraint; //Physical constraints
 struct convolution_params convol_params; 
 
 struct points starting_point; 
-struct points current_pose; 
-float P0[2]; 
-float P3[2]; 
-float P2[2]; 
-float P1[2]; 
+struct points current_pose;  
 float MAX_LINEAR_SPEED = 1.0;
 float MAX_ANGULAR_SPEED = 5.0; 
 float init_heading;
@@ -585,6 +584,7 @@ float r_linvel;
 float point[2];
 float last_point[2];
 float dtheta,dtheta2, last_dtheta2;
+#if DEBUG_MODE_ON 
 float Angveldebug[300];
 float Linveldebug[300];
 float rhodebug[300];
@@ -596,9 +596,10 @@ float rpmrightdebug[300];
 float rpmleftdebug[300];
 float dthetadebug[300];
 float dthetadebug2[300];
-float Y0[300];
-float Y1[300];
-float linear_speed_profile[300];
+#endif
+float Y0[400];
+float Y1[400];
+float linear_speed_profile[400];
 float debugleft_rpm, debugright_rpm;
 float hypot_distance; 
 float Kp_rho = 9.0;
@@ -2266,69 +2267,47 @@ UPDATE			:2022/8/31
 *************************************************************************************/
 void Generate_Bezier_Points(float x, float y, float theta, float travel_distance)
 {
-
-/*#if
-	float distance = travel_distance - x;
-	float x_offset = (Absolute_f(cos(theta * ONEDEDREE_RADIAN)) * distance) / CURVE_SECTION_NUM;
-	float y_offset = (sin(theta * ONEDEDREE_RADIAN) * distance) / CURVE_SECTION_NUM * CURVE_P2_Y;
-	P0[0] = x;
-	P0[1] = y;
-	P2[0] = x + distance;
-	P2[1] = (y + y_offset) / CURVE_P2_Y;
-	P1[0] = x + x_offset;
-	P1[1] = (y + y_offset);
-	delta_x[0] = P1[0] - P0[0];
-	delta_x[1] = P2[0] - P1[0];
-	delta_y[0] = P1[1] - P0[1];
-	delta_y[1] = P2[1] - P1[1];
-
-	//Based on paper
-	P0[0] = x;
-	P0[1] = y;
-	P1[0] = travel_distance / 4;
-	P1[1] = P0[1] * -4.0;
-	P2[0] = travel_distance/1.2;
-	P2[1] = P1[1] * -4.0;
-	P3[0] = travel_distance ;
-	P3[1] = 0;
-
-	// Define the control points for the Bezier curve
-	controlPoints[0] =  P0[0];
-	controlPoints[1] =  P0[1];
-	controlPoints[2] =  0.3;
-	controlPoints[3] =  0.01;
-	controlPoints[4] =  0.6;
-	controlPoints[5] =  0.0;
-	controlPoints[6] =  P3[0] / 1.05;
-	controlPoints[7] =  P3[1];
-
-	delta_x[0] = P1[0] - P0[0];
-	delta_x[1] = P2[0] - P1[0];
-	delta_x[2] = P3[0] - P2[0];
-	delta_y[0] = P1[1] - P0[1];
-	delta_y[1] = P2[1] - P1[1];
-	delta_y[2] = P3[1] - P2[1];
-#endif //New method to generate the control points*/
+#if ORIGINAL_POINTS_INIT 
+	/*
 	P0[0] = x; 
 	P0[1] = y; 
-	P3[0] = x + QR_INTERVAL_1;
+	P3[0] = QR_INTERVAL_1;// ending point is (1.0,0)
 	//P3[0] = travel_distance+x;
 	//P3[1] = 0; 
-	double yaw = theta * ONE_DEGREE_RADIAN; 
-	double x_offset = 0.3 * (QR_INTERVAL_1+x);
+	float yaw = theta * ONE_DEGREE_RADIAN; 
+	float x_offset = 0.22 * (QR_INTERVAL_1-x);
 	//double x_offset = 0.3 * (travel_distance+x);
-	double y_offset = x_offset * yaw; //Small angle can be neglected 
+	float y_offset = x_offset * yaw; //Small angle can be neglected 
 	//double target_y = -0.01 * P1[1]; 
-	double target_y = 0;
+	float target_y = -P0[1]*0.55;
 	P1[0] = P0[0] + x_offset; 
 	P1[1] = P0[1] + y_offset; 
 	P2[0] = P0[0] + 2.2 * x_offset; 
 	P2[1] = target_y;
-	P3[1] = target_y;
+	P3[1] = 0;
 	controlPoints[0] = P1[0];
 	controlPoints[1] = P1[1];
 	controlPoints[2] = P2[0];
 	controlPoints[3] = P2[1];
+	*/ 
+#endif 
+	P0[0] = x;
+	P0[1] = y;
+	P3[0] = QR_INTERVAL_1;// ending point is (1.0,0) 
+	P3[1] = 0;
+	float offset = 1.0;
+	float starting_yaw = theta * ONE_DEGREE_RADIAN; 
+	float ending_yaw = 0; 
+	float dist = hypot((P0[0] - P3[0]), (P0[1] - P3[0])) / offset ; 
+	P1[0] = P0[0] + dist * cos(starting_yaw);
+	P1[1] = P0[1] + dist * sin(starting_yaw); 
+	P2[0] = P3[0] - dist * cos(ending_yaw); 
+	P2[1] = P3[1] - dist * sin(ending_yaw); 
+	controlPoints[0] = P1[0];
+	controlPoints[1] = P1[1];
+	controlPoints[2] = P2[0];
+	controlPoints[3] = P2[1];
+
 }
 /************************************************************************************
 FUNCTION		:Calculate_Linear_Velocity
@@ -2431,8 +2410,8 @@ void bezierCurve(float t, float* point, float* controlPoints)
         point[1] += b * controlPoints[i * 2 + 1];
     }
 */  
-	point[0] = ploynomial(t, 3, BEZIER_ORDER) * P0[0] + ploynomial(t, 2, BEZIER_ORDER) * P1[0] + ploynomial(t, 1, BEZIER_ORDER) * P2[0] + ploynomial(t, 0, BEZIER_ORDER) * P3[0]; 
-	point[1] = ploynomial(t, 3, BEZIER_ORDER) * P0[1] + ploynomial(t, 2, BEZIER_ORDER) * P1[1] + ploynomial(t, 1, BEZIER_ORDER) * P2[1] + ploynomial(t, 0, BEZIER_ORDER) * P3[1]; 
+	point[0] = ploynomial(t, 3, 3) * P0[0] + ploynomial(t, 2, 3) * P1[0] + ploynomial(t, 1, 3) * P2[0] + ploynomial(t, 0, 3) * P3[0]; 
+	point[1] = ploynomial(t, 3, 3) * P0[1] + ploynomial(t, 2, 3) * P1[1] + ploynomial(t, 1, 3) * P2[1] + ploynomial(t, 0, 3) * P3[1]; 
 }
 
 
@@ -2466,10 +2445,35 @@ INPUT			:	starting_pose: the initial pose for the calculation
 OUTPUT			:	current_pose: current pose using the incremental method calculation 
 UPDATE			:	2022/12/27
 *************************************************************************************/
-struct points get_current_pose(struct points starting_pose, int left_enc, int right_enc) {
-	current_pose.x = starting_pose.x; 
-	current_pose.y = starting_pose.y; 
-	current_pose.yaw = starting_pose.yaw; 
+struct points get_current_pose(struct points starting_pose) {
+	struct points _temp_pose = starting_pose; 
+	float d_left, d_right, d, th, x, y;
+	if (enc_left == 0) {
+		d_left = 0;
+		d_right = 0;
+	}
+	else {
+		d_left = (left - enc_left) / (ticks_meter * ticks_offset);
+		d_right = (right - enc_right) / (ticks_meter * ticks_offset);
+	}
+	enc_left = left;
+	enc_right = right;
+	d = (d_left + d_right) / 2.0;
+	th = (d_right - d_left) / motorpara.track_width.f;
+	if (d != 0)
+	{
+		x = cos(th) * d;
+		y = -sin(th) * d;
+		// calculate the final position of the robot
+		_temp_pose.x = _temp_pose.x + (cos(theta_final) * x - sin(theta_final) * y);
+		_temp_pose.y = _temp_pose.y + (sin(theta_final) * x + cos(theta_final) * y);
+	}
+	if (th != 0) {
+		theta_final = theta_final + th;
+	}
+
+	current_pose.x = _temp_pose.x; 
+	current_pose.y = _temp_pose.y; 
 }
 
 
@@ -2524,7 +2528,7 @@ INPUT			:two double number
 OUTPUT			:the smaller value of the two number 
 UPDATE			:2023/1/30
 *************************************************************************************/
-double min(double a, double b) {//Return the min value between a and b 
+float min(float a, float b) {//Return the min value between a and b 
 	if (a < b) {
 		return a;
 	}
@@ -2540,7 +2544,7 @@ INPUT			:two double number
 OUTPUT			:the bigger value of the two number
 UPDATE			:2023/1/30
 *************************************************************************************/
-double max(double a, double b) {
+float max(float a, float b) {
 	if (a > b) {
 		return a;
 	}
@@ -2643,6 +2647,20 @@ struct correction_data pose_based_speed_correction(struct pos current_pose, stru
 	return correction; 	
 }
 /************************************************************************************
+FUNCTION		:theta_correction 
+DESCRIPTION		:correction of the heading from the onboard 
+INPUT			:pose data from the onboard controller and calculated pose
+OUTPUT			:delta x and delta y value
+UPDATE			:2023/1/30
+*************************************************************************************/
+float theta_correction() {
+	Pose_Update(); 
+	return atan2(y_final, x_final); 
+}
+
+
+
+/************************************************************************************
 FUNCTION		:x_correction_pid
 DESCRIPTION		:using the pid control to generate the Sn value of each travelling 
 INPUT			:pose data from the PC
@@ -2673,7 +2691,7 @@ UPDATE			:2023/1/30
 void create_section_constraints(void) {
 	if (pose.c_dis.f == 1 && pose.f_dis.f == 0){//Only travel 1 meter
 		agv_constraint.section_type = ONLY_ONE_METER; 
-		agv_constraint.Sn = x_correction_pid(1.025,pose.x.f,-2,-0.002,0); //Sn distance (1.055-kp*pose.x.f)
+		agv_constraint.Sn = x_correction_pid(0.835,pose.x.f,-1.5,0,0); //Sn distance (1.055-kp*pose.x.f)
 		agv_constraint.v_f = 0;
 		agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
@@ -2682,16 +2700,16 @@ void create_section_constraints(void) {
 	}
 	else if (pose.f_dis.f != 0 && pose.c_dis.f == 1){//Travel multiple meters in start up section 
 		agv_constraint.section_type = START_UP;
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.835,pose.x.f,-1.5,-0.001,0); //QR distance
 		agv_constraint.v_f = pose.velocity.linear_v.f;
-		agv_constraint.v_max = 0.8; //Current max speed allowed 
+		agv_constraint.v_max = 0.85; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
 		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
 		agv_constraint.v_s = 0;
 	}
 	else if (pose.f_dis.f != 0 && pose.c_dis.f != 1) {//Travel multiple meters in start up section 
 		agv_constraint.section_type = MIDDLE;
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.81,pose.x.f,-1.9,-0.002,0); //QR distance
 		agv_constraint.v_f = pose.velocity.linear_v.f;
 		agv_constraint.v_max = 0.8; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
@@ -2700,11 +2718,11 @@ void create_section_constraints(void) {
 	}
 	else if (pose.f_dis.f == 0 && pose.c_dis.f != 0) {
 		agv_constraint.section_type = DEC; 
-		agv_constraint.Sn = x_correction_pid(0.955,pose.x.f,-1.5,-0.002,0); //QR distance
+		agv_constraint.Sn = x_correction_pid(0.81,pose.x.f,-1.9,-0.002,0); //QR distance
 		agv_constraint.v_f = 0;
 		agv_constraint.v_max = 0.8; //Current max speed allowed 
 		agv_constraint.jerk_constraint = 3;
-		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
+		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
 		agv_constraint.v_s = pose.velocity.linear_v.f;
 	}
 }
@@ -2780,20 +2798,8 @@ void Motion_Action()
 
 		    	last_point[0] = pose.x.f; //Also the start points 
 		    	last_point[1] = pose.y.f;
-		    	//point[0] = 0.0;point[1] = 0.0;
 				point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
-		    	double last_angle = pose.theta.f; 
-				
-				//hypot_distance = get_distance(point[0], point[1], 1, 0); 
-				//agv_constraint.Sn = hypot_distance; //hypot distance between the points 
-                #if TEST_1_METER
-				agv_constraint.Sn = 1; //QR distance
-				agv_constraint.v_f = 0; 
-				agv_constraint.v_max = 0.5; //Current max speed allowed 
-				agv_constraint.jerk_constraint = 3; 
-				agv_constraint.accleration_constraint = 0.55; 
-				agv_constraint.v_s = pose.velocity.linear_v.f;
-                #endif 
+		    	double last_angle = pose.theta.f;  
 				create_section_constraints();
 				convol_params = generation_convolute_params(agv_constraint); 
 				travel_time = travel_time_est(convol_params); 
@@ -2822,7 +2828,7 @@ void Motion_Action()
 				for (int i = 0; i < MAX_POSSIBLE_SIZE; i++) {
 					int start_index = i;
 					int end_index = i - M1 + 1;
-					double sum = 0;
+					float sum = 0;
 					for (int j = end_index; j <= start_index; j++) {
 						if (j >= 0 && j < MAX_POSSIBLE_SIZE) {
 							sum += Y0[j];
@@ -2832,17 +2838,20 @@ void Motion_Action()
 				} 
 
 				int total_points_count = 0;
+				real_curve_dist = 0; //Initize the curve distance count before a curve begins 
 				//Convolution to create y2 as the linear speed function 
 				for (int i = 0; i < MAX_POSSIBLE_SIZE; i++) {
 					int start_index = i;
 					int end_index = i - M2 + 1;
-					double sum = 0;
+					float sum = 0;
 					for (int j = end_index; j <= start_index; j++) {
 						if (j >= 0 && j < MAX_POSSIBLE_SIZE) {
 							sum += Y1[j];
 						}
 					}
-					linear_speed_profile[i] = sum / M2 + agv_constraint.v_s;
+					linear_speed_profile[i] = sum / M2 + agv_constraint.v_s; 
+					real_curve_dist = real_curve_dist + linear_speed_profile[i] * 0.020; 
+					ut[i] = real_curve_dist / (agv_constraint.Sn); 
 					total_points_count += 1;
 				}
 
@@ -2850,38 +2859,46 @@ void Motion_Action()
 				float T_max = travel_time; 
 			    for (int i = 0; i < total_points_count-1; i++)
 		        {
-		        float t = (float)i / (float)total_points_count; 
-				float next_t = (float)(i + 1) / (float)total_points_count; 
-				//float t = real_time / T_max; //normalized time
-		        bezierCurve(t, point, controlPoints); 
-				bezierCurve(next_t, next_point, controlPoints); 
+				//float t = real_time / T_max; //normalized time 
+				float u = ut[i]; 
+				float u_next = ut[i + 1]; 
+		        bezierCurve(u, point, controlPoints); 
+				bezierCurve(u_next, next_point, controlPoints); 
 		        if (i==0){
-					float first_heading = atan2((next_point[1] - pose.y.f), (next_point[0] - pose.x.f)); 
+					float dx = next_point[0] - pose.x.f; 
+					float dy = next_point[1] - pose.y.f; 
+					//float first_heading = atan2((next_point[1] - pose.y.f), (next_point[0] - pose.x.f)); 
+					float first_heading = atan(dy / dx); //Calculate the theta value
 					dtheta2 = first_heading - starting_point.yaw; 
 					last_angle = first_heading; 
 				}
 				else
 				{   
-					float target_heading = atan2((next_point[1] - point[1]), (next_point[0] - point[0]));
+					//float target_heading = atan2((next_point[1] - point[1]), (next_point[0] - point[0]));
+					float dx = point[0] - next_point[0]; 
+					float dy = point[1] - next_point[1];
+				    float target_heading = atan(dy / dx);
 					dtheta2 = target_heading - last_angle; //Delta in the angle change
 					//dtheta2 = atan2((point[1] - last_point[1]), (point[0] - last_point[0]));
 					last_angle = target_heading; 
 				}
 		        last_dtheta2 = dtheta2;
 		        //central angular velocity omega
-		        ang_vel = dtheta2/5;
+				ang_vel = dtheta2/0.020; 
 		        //last_angle = dtheta2; //Saving the last theta value
 		        //Robot velocity
 				r_linvel = linear_speed_profile[i]; 
+				linear_speed_profile[i] = 0;
 		        //r_linvel2 = hypot(last_point[0]-point[0], last_point[0]-point[1]);
 		        //Update the points information
 		        last_point[0] = point[0];
 		        last_point[1] = point[1];
 
-		        //double x_diff = pose.f_dis.f - point[0];
+		        // x_diff = pose.f_dis.f - point[0];
 		        //double y_diff = 0.0 - point[1];
 		        //calc_control_command(x_diff, y_diff, theta, 0.0, &rho,&v,&w);
 		        //rhodebug[i] = rho;
+#if DEBUG_MODE_ON
 		        vdebug[i] = r_linvel;
 		        //wdebug[i] = w;
 		        xpointdebug[i] = point[0];
@@ -2890,24 +2907,23 @@ void Motion_Action()
 		        rpmleftdebug[i]  = debugleft_rpm;
 		        dthetadebug[i] = dtheta;
 		        dthetadebug2[i] = dtheta2;
+#endif 
 
 		        if (fabs(r_linvel) > MAX_LINEAR_SPEED) {
 		        	r_linvel = copysign(MAX_LINEAR_SPEED, r_linvel);
 		        }
 		        if (fabs(ang_vel) > MAX_ANGULAR_SPEED) {
-		        	ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
+		        	//ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
 		        }
-
-				if(keep_straight == POSE_SPEED_CORRECTION){
-					//Calculate_Velocity_Rotation(t);
-				}else{
-					ang_vel = 0;
-				}
+#if DEBUG_MODE_ON
 				Angveldebug[i] = ang_vel;
 				Linveldebug[i] = r_linvel;
+#endif
 				Pose_Update();
-				//Slowspeed_Update(); //Sending speed command to the motor 
+				float current_heading_real = atan2(y_final, x_final); //Real heading of the AGV
 				Velocity2Rpm(r_linvel,ang_vel);
+				//Velocity2Rpm(0, ang_vel); 
+
 				if (Send_Wheel_Command() != 1){
 					cmd_sts = PC_CMDSTS_ERROR;
 					printf("Wheel command sending error \n");
@@ -2922,6 +2938,7 @@ void Motion_Action()
 		    }
             
 			Pose_Update();
+			//Start section ending processes (MOTION_DEC) 
 #if ORIGINAL_DEC_PROFILE
 			if(((static_delta_dis * delta_offset) > pose.f_dis.f)  && (pose.f_dis.f < 0.05)){
 			if((left - pose_start_enc_cnt + static_delta_dis * delta_offset * ticks_meter * ticks_offset) > pose_2final_enc_cnt){
