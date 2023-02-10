@@ -189,10 +189,11 @@ int32_t MAX_POSSIBLE_SIZE = 400;
 int32_t SAMPLES_PER_SECOND = 50; //(1s/DELTA_TIME) 
 float ACCERATE_CONSTRAINT_1_METER = 1.4;
 float ACCERATE_CONSTRAINT_MIDDLE = 0.10; 
-float ACCERATE_CONSTRAINT_DEC = 0.3; 
+float ACCERATE_CONSTRAINT_DEC = 0.1; 
 float kp = -1.0; 
 float ki = 0.0;
 float kd = 0.0;
+float kp_y = 0.05;
 float last_travelling_time;
 float err_sum; 
 float real_curve_dist; 
@@ -2240,7 +2241,7 @@ void Generate_Bezier_Points(float x, float y, float theta, float travel_distance
 	P0[0] = x;
 	P0[1] = y;
 	P3[0] = QR_INTERVAL_1;// ending point is (1.0,0) 
-	P3[1] = 0;
+	P3[1] = kp_y*y; //Implement the Y PID 
 	float offset = 1.0;
 	float starting_yaw = theta * ONE_DEGREE_RADIAN; 
 	float ending_yaw = 0; 
@@ -2622,7 +2623,17 @@ float heading_pid(float heading_err, float kp, float ki, float kd) {
 	heading_err = heading_err * ONE_DEGREE_RADIAN; 
 	return heading_err * kp; 
 }
-
+/************************************************************************************
+FUNCTION		:pose_refreshing 
+DESCRIPTION		:refresh the pose command infomation from the PC 
+INPUT			:pose data from the PC
+OUTPUT			:pose data refreshed
+UPDATE			:2023/1/30
+*************************************************************************************/
+void pose_refreshing() {
+	memcpy(&pose.x.bytes[0], &PcData[DataIdx], sizeof(pose.x.f) + sizeof(pose.y.f) + sizeof(pose.theta.f) + sizeof(pose.c_dis.f) + sizeof(pose.f_dis.f) + sizeof(pose.velocity));
+	debugLog("Receiving pose data from PC succeeds - Initial Command\n");
+}
 
 
 /************************************************************************************
@@ -2700,7 +2711,7 @@ void create_section_constraints(void) {
 			agv_constraint.section_type = START_UP;
 			agv_constraint.Sn = x_correction_pid(0.835, pose.x.f, -1.5, -0.001, 0); //QR distance
 			agv_constraint.v_f = pose.velocity.linear_v.f;
-			agv_constraint.v_max = 0.85; //Current max speed allowed 
+			agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
 			agv_constraint.v_s = 0;
@@ -2911,9 +2922,19 @@ void Motion_Action()
 		        	//ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
 		        }
 				Pose_Update();
-				Velocity2Rpm(r_linvel,ang_vel);
+#if MOTION_DEBUG_ON
+				if (agv_constraint.section_type == START_UP) {
+				Velocity2Rpm(0,ang_vel); //Only spins if strucks in START_UP 
+				}
+				else if (agv_constraint.section_type == DEC) {
+					Velocity2Rpm(0,0); //On the halt if strucks in DEC 
+				}
+				else{
+					Velocity2Rpm(r_linvel, ang_vel); //Normal 
+				}
 				//Velocity2Rpm(0, ang_vel); 
-
+#endif 
+				Velocity2Rpm(r_linvel, ang_vel);
 				if (Send_Wheel_Command() != 1){
 					cmd_sts = PC_CMDSTS_ERROR;
 					printf("Wheel command sending error \n");
@@ -3016,7 +3037,8 @@ void Motion_Action()
                 }
                 else
                 {
-				cmd_sts = PC_CMDSTS_COMPLETED; 
+				Pose_Speed_Init(); 
+				cmd_sts = PC_CMDSTS_INPROGRESS; 
 				motion_exec_state = MOTION_START; 
                 } 
 			if (Send_Wheel_Speed(pose.velocity.linear_v.f, pose.velocity.angular_v.f) != 1) {
