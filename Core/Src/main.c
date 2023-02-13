@@ -243,19 +243,19 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of PCTask */
-  osThreadDef(PCTask, StartPcTask, osPriorityHigh, 0, 128);
+  osThreadDef(PCTask, StartPcTask, osPriorityHigh, 0, 128); //Receive PC command here 
   PCTaskHandle = osThreadCreate(osThread(PCTask), NULL);
 
   /* definition and creation of MotorTask */
-  osThreadDef(MotorTask, StartMotorTask, osPriorityLow, 0, 128);
+  osThreadDef(MotorTask, StartMotorTask, osPriorityLow, 0, 128); //Sending Query to the PC
   MotorTaskHandle = osThreadCreate(osThread(MotorTask), NULL);
 
   /* definition and creation of ActionTask */
-  osThreadDef(ActionTask, StartActionTask, osPriorityBelowNormal, 0, 128);
+  osThreadDef(ActionTask, StartActionTask, osPriorityBelowNormal, 0, 128); //Action Execuation 
   ActionTaskHandle = osThreadCreate(osThread(ActionTask), NULL);
 
   /* definition and creation of IOTask */
-  osThreadDef(IOTask, StartIOControlTask, osPriorityNormal, 0, 128);
+  osThreadDef(IOTask, StartIOControlTask, osPriorityNormal, 0, 128); //Initize IOs for the operation 
   IOTaskHandle = osThreadCreate(osThread(IOTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
@@ -263,7 +263,7 @@ int main(void)
   /* USER CODE END RTOS_THREADS */
 
   /* Start scheduler */
-  osKernelStart();
+  osKernelStart(); //Kicks off the main program threads (4x)
 
   /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */

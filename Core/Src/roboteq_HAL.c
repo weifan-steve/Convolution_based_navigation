@@ -197,7 +197,7 @@ float kp_y = 0.05;
 float last_travelling_time;
 float err_sum; 
 float real_curve_dist; 
-float ut[400];//ut list for the bezier curve
+float ut[450];//ut list for the bezier curve
 float sampling_time = 0.020; 
 int need_to_stop = 0;
 
@@ -596,9 +596,9 @@ float rpmleftdebug[300];
 float dthetadebug[300];
 float dthetadebug2[300];
 #endif
-float Y0[400];
-float Y1[400];
-float linear_speed_profile[400];
+float Y0[450];
+float Y1[450];
+float linear_speed_profile[450];
 float debugleft_rpm, debugright_rpm;
 float hypot_distance; 
 float Kp_rho = 9.0;
@@ -745,7 +745,7 @@ void Receive_PC_Command()
 		// Receive command from PC and judge header is OK, after return ACK to PC, start command execution to Roboteq
 		if (isPCDataOK == TRUE){
 			isPCDataOK = FALSE;
-			Pc_Cmd_Process();	// Process all commands from PC: control motor and deck.
+			Pc_Cmd_Process();// Process all commands from PC: control motor and deck.
 		}
 		if (isPCActionOK == TRUE){
 			isPCActionOK = FALSE;
@@ -1661,18 +1661,21 @@ void Pc_Cmd_Process(){
 			break;
 
         case PC_CMDID_POSE: //handler for the motor_pose command 
-        	if(motion_exec_state == MOTION_IDLE || motion_exec_state == MOTION_START){
+        	if(motion_exec_state == MOTION_IDLE || motion_exec_state == MOTION_INIT){
 				memcpy(&pose.x.bytes[0],&PcData[DataIdx],sizeof(pose.x.f)+sizeof(pose.y.f)+sizeof(pose.theta.f)+sizeof(pose.c_dis.f)+sizeof(pose.f_dis.f)+sizeof(pose.velocity));
 				debugLog("Receiving pose data from PC succeeds - Initial Command\n");
+				uart_Ack2PC(TYPE_ACK, 0);
 				qr_interval = pose.c_dis.f;
 				pose_2final_enc_cnt = 0;
 				remaining_distance = 1.0;
 				if(pose.f_dis.f < 0.01){
 				Calculate_Static_Delta_Distance();}
 				Local_Path_Planning(); //Create the control points of the AGV 
+				debugLog("Control points generated successfully\n");
         	}else{
 				memcpy(&pose.x.bytes[0],&PcData[DataIdx],sizeof(pose.x.f)+sizeof(pose.y.f)+sizeof(pose.theta.f)+sizeof(pose.c_dis.f)+sizeof(pose.f_dis.f)+sizeof(pose.velocity));
 				debugLog("Receiving pose data from PC succeeds - Initial Command\n");
+				uart_Ack2PC(TYPE_ACK, 0);
 				qr_interval = pose.c_dis.f;
 				pose_2final_enc_cnt = 0;
 				//remaining_distance = pose.f_dis.f;
@@ -1680,6 +1683,7 @@ void Pc_Cmd_Process(){
 				if(pose.f_dis.f < 0.01){
 				Calculate_Static_Delta_Distance();}
 				Local_Path_Planning();
+				debugLog("Control points generated successfully\n");
         	}
             break;
 
@@ -1744,6 +1748,19 @@ uint8_t Velocity_Process(){
 	}
 	return 1;
 }
+
+/************************************************************************************
+FUNCTION		:Refreshing_pose 
+DESCRIPTION		:Refresh the planner pose info by acquiring data 
+INPUT			:None
+OUTPUT			:Success: 1; Fail: 0
+UPDATE			:2023/02/13 
+*************************************************************************************/
+uint8_t Refreshing_pose() {
+	memcpy(&pose.x.bytes[0], &PcData[DataIdx], sizeof(pose.x.f) + sizeof(pose.y.f) + sizeof(pose.theta.f) + sizeof(pose.c_dis.f) + sizeof(pose.f_dis.f) + sizeof(pose.velocity)); 
+	Local_Path_Planning(); 
+}
+
 
 /************************************************************************************
 FUNCTION		:Read_Para_Query
@@ -1865,8 +1882,9 @@ uint8_t Local_Path_Planning()
 		cmd_sts = PC_CMDSTS_ABORTED;
 		return 0;
 	}
+	Pose_Init(); 
 	create_section_constraints(); //Create section constraints according to the motion_exec_state and the command
-	Generate_Bezier_Points(pose.x.f, pose.y.f, pose.theta.f, pose.c_dis.f);
+	Generate_Bezier_Points(pose.x.f, pose.y.f, pose.theta.f, 1.0); //final_distance as reference  ( Current distance ALWAYS 1) 
 	cmd_sts = PC_CMDSTS_INPROGRESS; 
 	return 1;
 }
@@ -2695,14 +2713,15 @@ void create_section_constraints(void) {
 			agv_constraint.v_s = 0;
 			motion_exec_state = MOTION_INIT;//Starting from standstill 
 		}
-		else if (motion_exec_state == MOTION_START) {
+		else if (motion_exec_state == MOTION_INIT) {
 			agv_constraint.section_type = DEC;
-			agv_constraint.Sn = x_correction_pid(1.0, pose.x.f, -1.9, -0.002, 0); //QR distance
+			agv_constraint.Sn = x_correction_pid(2.5, pose.x.f, -1.9, -0.002, 0); //QR distance
 			agv_constraint.v_f = 0;
 			agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
 			agv_constraint.v_s = pose.velocity.linear_v.f;
+			motion_exec_state = MOTION_START; 
 		}
 	}
 	else {
@@ -2717,7 +2736,7 @@ void create_section_constraints(void) {
 			agv_constraint.v_s = 0;
 			motion_exec_state = MOTION_INIT;
 		} 
-		else if (motion_exec_state == MOTION_START) {
+		else if (motion_exec_state == MOTION_INIT) {
 			agv_constraint.section_type = MIDDLE;
 			agv_constraint.Sn = x_correction_pid(0.81, pose.x.f, -1.9, -0.002, 0); //QR distance
 			agv_constraint.v_f = pose.velocity.linear_v.f;
@@ -2725,10 +2744,9 @@ void create_section_constraints(void) {
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
 			agv_constraint.v_s = agv_constraint.v_f;
+			motion_exec_state = MOTION_START; 
 		}
 	}
-
-
 }
 
 
@@ -2747,13 +2765,13 @@ void Motion_Action()
 
 	switch (motion_exec_state)
 	{
-		case MOTION_IDLE:
+    case MOTION_IDLE:
 			break;
 
-		case MOTION_INIT:
+    case MOTION_INIT:
 			Pose_Init();
 			motion_exec_state = MOTION_START;
-		case MOTION_START:
+    case MOTION_START:
 /*
 #if BEZIER_CURVE_3POINTS
 			if(elapse_time < time_interval){
@@ -2825,6 +2843,9 @@ void Motion_Action()
 						else {
 							Y0[i] = agv_constraint.v_f;
 						}
+					}
+					else {
+						Y0[i] = 0; 
 					}
 				}
 
@@ -2927,8 +2948,7 @@ void Motion_Action()
 				Velocity2Rpm(0,ang_vel); //Only spins if strucks in START_UP 
 				}
 				else if (agv_constraint.section_type == DEC) {
-					Velocity2Rpm(0,0); //On the halt if strucks in DEC 
-				}
+					Velocity2Rpm(-linear_vel,0); //On the reverse if struck in the DEC				}
 				else{
 					Velocity2Rpm(r_linvel, ang_vel); //Normal 
 				}
@@ -2949,7 +2969,8 @@ void Motion_Action()
 		    }
             
 			Pose_Update();
-	        //Not to break purposely 
+			motion_exec_state = MOTION_DEC; //Into post section clean up 
+			break; 
 	case MOTION_DEC: //Post section cleanup of the states
 			/*
 #if ORIGINAL_DEC_PROFILE
@@ -3038,9 +3059,12 @@ void Motion_Action()
                 else
                 {
 				Pose_Speed_Init(); 
-				cmd_sts = PC_CMDSTS_INPROGRESS; 
-				motion_exec_state = MOTION_START; 
+				Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); 
+				motion_exec_state = MOTION_INIT;
+				cmd_sts = PC_CMDSTS_COMPLETED; 
+				Refreshing_pose(); 
                 } 
+
 			if (Send_Wheel_Speed(pose.velocity.linear_v.f, pose.velocity.angular_v.f) != 1) {
 				printf("Wheel speed sending error \n");
 				cmd_sts = PC_CMDSTS_ERROR;
@@ -3121,7 +3145,7 @@ void Motion_Action()
 			motion_exec_state = MOTION_IDLE;
 			break;
 
-		default:
+	default:
 			debugLog("Wrong command\n");
 	}
 }
@@ -3227,6 +3251,32 @@ uint8_t Pose_End_Process(){
 		return 0;
 	}
 	return 1;
+}
+/************************************************************************************
+FUNCTION		:Section_End_Process 
+DESCRIPTION		:ending the current section 
+INPUT			:None
+OUTPUT			:Success: 1; Fail: 0
+UPDATE			:2023/2/13
+*************************************************************************************/
+uint8_t Section_End_Process() {
+	if (agv_constraint.section_type == ONLY_ONE_METER || agv_constraint.section_type == DEC) //This section ends, AGV shall stop 
+	{
+		Pose_Speed_Init();
+		Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); //Halt the AGV if the section is ONLY_ONE_METER/DEC 
+		need_to_stop = 1;
+		cmd_sts = PC_CMDSTS_COMPLETED;
+		motion_exec_state = MOTION_IDLE; //AGV stops and change state to MOTION_IDLE
+	}
+	else
+	{
+		Pose_Speed_Init();
+		Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+		motion_exec_state = MOTION_INIT;
+		cmd_sts = PC_CMDSTS_COMPLETED;
+		Refreshing_pose();
+	}
+	return 1; 
 }
 /************************************************************************************
 FUNCTION		:Pose_Speed_Init
