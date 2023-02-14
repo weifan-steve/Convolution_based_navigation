@@ -243,11 +243,11 @@ int main(void)
 
   /* Create the thread(s) */
   /* definition and creation of PCTask */
-  osThreadDef(PCTask, StartPcTask, osPriorityHigh, 0, 128); //Receive PC command here 
+  osThreadDef(PCTask, StartPcTask, osPriorityHigh, 0, 128); //Receive PC command here: priority: HIGH
   PCTaskHandle = osThreadCreate(osThread(PCTask), NULL);
 
-  /* definition and creation of MotorTask */
-  osThreadDef(MotorTask, StartMotorTask, osPriorityLow, 0, 128); //Sending Query to the PC
+  /* definition and creation of MotorTask */ 
+  osThreadDef(MotorTask, StartMotorTask, osPriorityLow, 0, 128); //Sending Query to the PC 
   MotorTaskHandle = osThreadCreate(osThread(MotorTask), NULL);
 
   /* definition and creation of ActionTask */

@@ -112,7 +112,8 @@ typedef union
 #endif
 #if MCU_INITREQ_ENABLE
 #define	MCU_CMDID_INITREQ		0x81
-#endif
+#endif 
+//Data types symbol 
 #define	MCU_CMDID_QUERY			0x82
 #define	MCU_CMDID_STATUS		0x83
 
@@ -328,5 +329,6 @@ typedef union
 #define START_UP 1
 #define MIDDLE 2
 #define DEC 3
+#define SKIPPED 4
 
 #endif /* roboteq_HAL_H_ */
