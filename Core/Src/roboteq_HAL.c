@@ -810,11 +810,13 @@ OUTPUT			:None
 UPDATE			:2022/7/25
 *************************************************************************************/
 void Exec_Action(){
+	NV_Pt_On(LED_ORG);
 	Home_Action();		// Deck Home operation
 	Deck_Action();		// Deck rotation
 	Body_Action();		// Wheel rotation
 	Lifter_Action();	// Lifter up down operation
 	Motion_Action();	// Motion control while traveling
+	NV_Pt_Off(LED_ORG);
 	return;
 }
 
@@ -2814,7 +2816,9 @@ void Motion_Action()
     case MOTION_INIT:
 			Pose_Init();
 			motion_exec_state = MOTION_START;
+			break;
     case MOTION_START:
+		motion_exec_state = MOTION_ONMOVE; 
 		if (agv_constraint.section_type != SKIPPED) 
 		{
 			starting_point.x = pose.x.f;
@@ -2962,18 +2966,25 @@ void Motion_Action()
 					uart_Data2PC();
 					moving_tick = 0;
 				}
-
+				if (pose.f_dis.f == 0) {
+					NV_Pt_On(LED_RED);
+				}
 				HAL_Delay(INTERVAL_TIME);//Delay by the delta_time millisecs. (one delta_time)
 			}
+				HAL_Delay(10);
+				Section_End_Process();
 				Pose_Update();
-				motion_exec_state = MOTION_DEC; //Into post section clean up 
+				//motion_exec_state = MOTION_DEC; //Into post section clean up 
 		}
         else {
 		        //Into SKIPPED section 
 		        Pose_Update();
-		        motion_exec_state = MOTION_DEC; //Into post section clean up 
+		        //motion_exec_state = MOTION_DEC; //Into post section clean up 
 			}
-			break; 
+			end_left = left;
+			end_right = right;
+			Pose_Update();
+			break;
 	case MOTION_DEC: //Post section cleanup of the states
 			/*
 #if ORIGINAL_DEC_PROFILE
@@ -3050,7 +3061,8 @@ void Motion_Action()
 					cmd_sts = PC_CMDSTS_ERROR;
 					return;
 				}
-*/          
+*/         
+#if ORIGINAL_SECTION_END_PROCESS 
 			if (agv_constraint.section_type == ONLY_ONE_METER || agv_constraint.section_type == DEC) //This section ends, AGV shall stop 
                 {
 				cmd_sts = PC_CMDSTS_COMPLETED;
@@ -3082,7 +3094,7 @@ void Motion_Action()
 				uart_Data2PC();
 				motion_exec_state = MOTION_IDLE;
 			    }
-
+#endif 
 			if (Send_Wheel_Speed(pose.velocity.linear_v.f, pose.velocity.angular_v.f) != 1) {
 				printf("Wheel speed sending error \n");
 				cmd_sts = PC_CMDSTS_ERROR;
@@ -3279,24 +3291,26 @@ INPUT			:None
 OUTPUT			:Success: 1; Fail: 0
 UPDATE			:2023/2/13
 *************************************************************************************/
-uint8_t Section_End_Process() {
-	if (agv_constraint.section_type == ONLY_ONE_METER || agv_constraint.section_type == DEC) //This section ends, AGV shall stop 
-	{
-		Pose_Speed_Init();
-		Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f); //Halt the AGV if the section is ONLY_ONE_METER/DEC 
-		need_to_stop = 1;
-		cmd_sts = PC_CMDSTS_COMPLETED;
-		motion_exec_state = MOTION_IDLE; //AGV stops and change state to MOTION_IDLE
+void Section_End_Process() {
+	if (pose.f_dis.f != 0) {
+		motion_exec_state = MOTION_ONMOVE; 
+		cmd_sts = PC_CMDSTS_INPROGRESS; 
+		uart_Data2PC(); 
 	}
-	else
-	{
-		Pose_Speed_Init();
-		Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
-		motion_exec_state = MOTION_INIT;
-		cmd_sts = PC_CMDSTS_COMPLETED;
-		Refreshing_pose();
+	else if (pose.f_dis.f == 0) {
+		if (agv_constraint.section_type == ONLY_ONE_METER) {
+			cmd_sts = PC_CMDSTS_COMPLETED;
+			uart_Data2PC();
+			Pose_Speed_Init();
+			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+			motion_exec_state = MOTION_IDLE;
+		}
+		else {
+			cmd_sts = PC_CMDSTS_INPROGRESS; 
+			uart_Data2PC(); 
+			motion_exec_state = MOTION_ONMOVE;
+		}
 	}
-	return 1; 
 }
 /************************************************************************************
 FUNCTION		:Pose_Speed_Init
