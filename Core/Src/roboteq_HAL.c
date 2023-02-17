@@ -2731,12 +2731,12 @@ void create_section_constraints(void) {
 				agv_constraint.jerk_constraint = 0;
 				agv_constraint.accleration_constraint = 0;
 				agv_constraint.v_s = 0;
-				motion_exec_state = MOTION_START; 
+				motion_exec_state = MOTION_INIT; 
 				total_distance = 0; 
 			}
 			
 		}
-		else if (motion_exec_state == MOTION_INIT) {
+		else if (motion_exec_state == MOTION_ONMOVE) {
 			agv_constraint.section_type = DEC;
 			agv_constraint.Sn = x_correction_pid(1.5, pose.x.f, -1.9, -0.002, 0); //QR distance
 			agv_constraint.v_f = 0;
@@ -2744,7 +2744,7 @@ void create_section_constraints(void) {
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
 			agv_constraint.v_s = pose.velocity.linear_v.f;
-			motion_exec_state = MOTION_START; //Trigger the movement 
+			motion_exec_state = MOTION_INIT; //Trigger the movement 
 		} 
 	}
 	else {
@@ -2760,7 +2760,7 @@ void create_section_constraints(void) {
 			motion_exec_state = MOTION_INIT;
 			total_distance = pose.c_dis.f + pose.f_dis.f; 
 		} 
-		else if (motion_exec_state == MOTION_INIT) {
+		else if (motion_exec_state == MOTION_ONMOVE) {
 			agv_constraint.section_type = MIDDLE;
 			agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.9, -0.002, 0); //QR distance
 			agv_constraint.v_f = pose.velocity.linear_v.f;
@@ -2768,7 +2768,7 @@ void create_section_constraints(void) {
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
 			agv_constraint.v_s = agv_constraint.v_f;
-			motion_exec_state = MOTION_START; 
+			motion_exec_state = MOTION_INIT; 
 		}
 	}
 }
@@ -2813,8 +2813,11 @@ void Motion_Action()
 
     case MOTION_INIT:
 			Pose_Init();
+			convol_params = generation_convolute_params(agv_constraint);
 			motion_exec_state = MOTION_START;
-    case MOTION_START:
+			break; 
+    case MOTION_START: 
+		motion_exec_state = MOTION_ONMOVE;
 		if (agv_constraint.section_type != SKIPPED) 
 		{
 			starting_point.x = pose.x.f;
@@ -2825,7 +2828,7 @@ void Motion_Action()
 			last_point[1] = pose.y.f;
 			point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
 			double last_angle = pose.theta.f;
-			convol_params = generation_convolute_params(agv_constraint);
+			
 			travel_time = travel_time_est(convol_params);
 			int M1 = (int)(convol_params.t1 * SAMPLES_PER_SECOND);
 			int M2 = (int)(convol_params.t2 * SAMPLES_PER_SECOND);
@@ -2962,10 +2965,19 @@ void Motion_Action()
 					uart_Data2PC();
 					moving_tick = 0;
 				}
+				if (pose.f_dis.f == 0) {
+					NV_Pt_Off(LED_ORG);
+					NV_Pt_On(LED_RED);
+				}
+				else {
+					NV_Pt_Off(LED_RED);
+					NV_Pt_On(LED_ORG);
+				}
 
 				HAL_Delay(INTERVAL_TIME);//Delay by the delta_time millisecs. (one delta_time)
 			}
 				Pose_Update();
+				Pc_Cmd_Process();
 				motion_exec_state = MOTION_DEC; //Into post section clean up 
 		}
         else {
@@ -3055,8 +3067,8 @@ void Motion_Action()
                 {
 				cmd_sts = PC_CMDSTS_COMPLETED;
 				if (agv_constraint.section_type == DEC) {
-					Refreshing_pose(); //The SKIP section is refreshed 
-					motion_exec_state = MOTION_INIT;
+					//Refreshing_pose(); //The SKIP section is refreshed 
+					motion_exec_state = MOTION_IDLE;
 				}
 				else {
 					Pose_Speed_Init();
@@ -3068,18 +3080,18 @@ void Motion_Action()
                 }
                 else if(agv_constraint.section_type == MIDDLE || agv_constraint.section_type == START_UP)
                 {
-				cmd_sts = PC_CMDSTS_COMPLETED; //Finish of current section 
-				Velocity2Rpm(pose.velocity.linear_v.f, 0); 
-				Refreshing_pose(); 
-				uart_Data2PC();
-				motion_exec_state = MOTION_INIT;
+				cmd_sts = PC_CMDSTS_INPROGRESS; //Finish of current section 
+				//Velocity2Rpm(pose.velocity.linear_v.f, 0); 
+				//Refreshing_pose(); 
+				//uart_Data2PC();
+				motion_exec_state = MOTION_ONMOVE;
 			     }
 				else if(total_distance == 0) {
 				cmd_sts = PC_CMDSTS_COMPLETED; //SKIPPED section 
-				Pose_Speed_Init();
-				Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
-				Refreshing_pose(); 
-				uart_Data2PC();
+				//Pose_Speed_Init();
+				//Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+				//Refreshing_pose(); 
+				//uart_Data2PC();
 				motion_exec_state = MOTION_IDLE;
 			    }
 
@@ -3091,6 +3103,7 @@ void Motion_Action()
 			end_left = left;
 			end_right = right;
 			Pose_Update();
+			NV_Pt_Off(LED_RED);
 			break;
 
 	case MOTION_PAUSE:

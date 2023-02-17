@@ -282,6 +282,7 @@ typedef union
 #define MOTION_PAUSE_END 6
 #define MOTION_RESUME 7
 #define MOTION_ABORTED 8
+#define MOTION_ONMOVE 9
 
 #define MOTION_FINETUNE 7
 #define MOTION_LOWER_THRESHOLD 0.998
