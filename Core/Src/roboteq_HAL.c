@@ -3304,6 +3304,7 @@ void Section_End_Process() {
 			Pose_Speed_Init();
 			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
 			motion_exec_state = MOTION_IDLE;
+			NV_Pt_Off(LED_RED);
 		}
 		else {
 			cmd_sts = PC_CMDSTS_INPROGRESS; 
