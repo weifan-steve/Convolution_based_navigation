@@ -1111,7 +1111,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		oldpos_l = left;
 		oldpos_r = right;
 		indx = 0;
-		Led_Green();
+		Led_Status_display();
 	}
   }
   /* USER CODE BEGIN Callback 1 */
