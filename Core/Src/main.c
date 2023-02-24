@@ -138,6 +138,7 @@ extern struct {
 	int32int8 deck_cpr;
 }motorpara;
 extern int32_t TIMEOUT;
+extern uint32_t motion_exec_state;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -161,6 +162,7 @@ void StartIOControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 extern uint8_t Roboteq_Init (void);
+
 extern uint8_t Pc_Init();
 extern uint8_t Deck_Init();
 extern void IO_Control();
@@ -1060,7 +1062,7 @@ void StartActionTask(void const * argument)
   {
 	  uint32_t PreviousWakeTime = osKernelSysTick();
 	  Exec_Action();
-	  osDelayUntil(&PreviousWakeTime, 50);
+	  osDelayUntil(&PreviousWakeTime, 25);
 //	  HAL_IWDG_Refresh(&hiwdg);		// Watchdog Refresh
   }
   /* USER CODE END StartActionTask */

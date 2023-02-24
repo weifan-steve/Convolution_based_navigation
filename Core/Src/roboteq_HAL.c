@@ -185,12 +185,12 @@ const float r_coefficient_1[6][12] = {
 
 /* Private variables ---------------------------------------------------------*/
 uint8_t open_loop=FALSE	;		// false
-int32_t MAX_POSSIBLE_SIZE = 450; 
+int32_t MAX_POSSIBLE_SIZE = 800; 
 int32_t SAMPLES_PER_SECOND = 50; //(1s/DELTA_TIME) 
 int INTERVAL_TIME; 
 float ACCERATE_CONSTRAINT_1_METER = 1.4;
 float ACCERATE_CONSTRAINT_MIDDLE = 0.10; 
-float ACCERATE_CONSTRAINT_DEC = 0.5; 
+float ACCERATE_CONSTRAINT_DEC = 0.2; 
 float kp = -1.0; 
 float ki = 0.0;
 float kd = 0.0;
@@ -199,10 +199,12 @@ float y_th = 0.010;
 float last_travelling_time;
 float err_sum; 
 float real_curve_dist; 
-float ut[450];//ut list for the bezier curve
+float ut[650];//ut list for the bezier curve
 float sampling_time = 0.020; 
 int need_to_stop = 0;
 float total_distance = 0; 
+float actual_distance = 0;
+int total_section_count = 0; 
 float last_angle; 
 int upload_tick = 0;
 
@@ -240,26 +242,26 @@ struct correction_data {
 };
 
 struct design_params {
-	double v_s;
-	double v_f;
-	double accleration_constraint; //Maximum accleration 
-	double jerk_constraint; //Jerk 
-	double Sn;// 1m distance of the 2 QR codes 
-	double v_max; //max permitable speed 
-	int section_type;
+	float v_s;
+	float v_f;
+	float accleration_constraint; //Maximum accleration 
+	float jerk_constraint; //Jerk 
+	float Sn;// 1m distance of the 2 QR codes 
+	float v_max; //max permitable speed 
+	int section_type; 
 };
 
 struct convolution_params {
-	double t0;
-	double t1;
-	double t2; //Total time = t0+t1+t2 
-	double v0;
+	float t0;
+	float t1;
+	float t2; //Total time = t0+t1+t2 
+	float v0;
 };
 
 struct points {
-	double x;
-	double y;
-	double yaw;
+	float x;
+	float y;
+	float yaw;
 };
 
 struct pos pose;
@@ -267,7 +269,9 @@ struct pos pose;
 struct velo velocity;
 struct velo correction_velocity;
 
-struct design_params agv_constraint; //Physical constraints
+struct design_params agv_constraint; //Physical constraints used for this section 
+struct design_params current_section_constraint; 
+struct design_params global_agv_constraint[10]; //Buffer for the global sections planning 
 
 struct convolution_params convol_params; 
 
@@ -277,7 +281,7 @@ float MAX_LINEAR_SPEED = 1.0;
 float MAX_ANGULAR_SPEED = 5.0; 
 float init_heading;
 float next_point[2];
-
+float current_final_distance = -1; 
 
 struct{
 	float2int angle;
@@ -501,7 +505,7 @@ uint8_t uart_Deck_Release();
 uint8_t uart_Deck_Stop();
 uint8_t uart_Lifter_Stop();
 uint8_t Velocity_Process();
-uint8_t Local_Path_Planning();
+uint8_t Path_Planning();
 uint8_t Read_Para_Query();
 uint8_t Motor_Rotation();
 uint8_t Deck_Home();
@@ -581,6 +585,7 @@ void Reset_Encoder_Count();
 extern void Ringbuf_Init (void);
 void Global_Planning();
 void Led_Status_display();
+void upload_status_to_pc(int interval); 
 extern uint8_t waitFor (char *string, uint32_t Timeout);
 int BEZIER_ORDER=3;
 float controlPoints [4];
@@ -602,8 +607,8 @@ float rpmleftdebug[300];
 float dthetadebug[300];
 float dthetadebug2[300];
 #endif 
-float Y1[450];
-float linear_speed_profile[450];
+float Y1[800];
+float linear_speed_profile[800];
 float debugleft_rpm, debugright_rpm;
 float hypot_distance; 
 float Kp_rho = 9.0;
@@ -797,7 +802,7 @@ void Send_Querydata2PC()
 		refresh_count++;
 		if(refresh_count >= motorpara.refresh_rate){
 			refresh_count = 0;
-			uart_Data2PC();
+			//uart_Data2PC();
 		}
 #if ENABLE_PC_STATUS_REQ
 		motor_deck_status_bytes = 0;
@@ -1334,7 +1339,7 @@ void IO_Control(){
     		deck_exec_state = DECKROTATION_IDLE;
     		body_exec_state = BODYROTATION_IDLE;
 			lifter_exec_state = LIFTERMOVE_IDLE;
-			motion_exec_state = MOTION_IDLE;
+			motion_exec_state = MOTION_IDLE;  
         	isEstopOn  = TRUE;
         	NV_Pt_On(LED_RED);
        	}
@@ -1344,6 +1349,7 @@ void IO_Control(){
     		velocity.angular_v.f = 0;
     		pose.velocity.linear_v.f = 0;
     		pose.velocity.angular_v.f = 0;
+			cmd_sts = PC_CMDSTS_IDLE;
 			current_deck_pos.f = 0.0;
 			current_lifter_dir = LIFTER_DN;
     		uart_Motor_Release();
@@ -1411,13 +1417,22 @@ void Led_Status_display(){
 	}else{
 		NV_Pt_Off(LED_GRN);
 	}
-
+#if DEBUG_MODE 
 	if (led_orange && cmd_sts == PC_CMDSTS_INPROGRESS) {
 		NV_Pt_On(LED_ORG);
 	}
 	else {
 		NV_Pt_Off(LED_ORG); 
 	}
+
+#endif 
+	if (agv_constraint.section_type == DEC) {
+		NV_Pt_On(LED_ORG); 
+	}
+	else {
+		NV_Pt_Off(LED_ORG);
+	} 
+	upload_status_to_pc(motorpara.refresh_rate);
 }
 /************************************************************************************
 FUNCTION		:upload_status_to_PC
@@ -1689,32 +1704,19 @@ void Pc_Cmd_Process(){
 			break;
 
         case PC_CMDID_POSE: //handler for the motor_pose command 
-        	if(motion_exec_state == MOTION_IDLE || motion_exec_state == MOTION_ONMOVE){
 				memcpy(&pose.x.bytes[0],&PcData[DataIdx],sizeof(pose.x.f)+sizeof(pose.y.f)+sizeof(pose.theta.f)+sizeof(pose.c_dis.f)+sizeof(pose.f_dis.f)+sizeof(pose.velocity));
 				debugLog("Receiving pose data from PC succeeds - Initial Command\n");
-				//uart_Ack2PC(TYPE_ACK, 0);
 				qr_interval = pose.c_dis.f;
 				pose_2final_enc_cnt = 0;
 				remaining_distance = 1.0;
 				if(pose.f_dis.f < 0.01){
 				Calculate_Static_Delta_Distance();}
-				Local_Path_Planning(); //Create the control points of the AGV 
+				if (motion_exec_state == MOTION_IDLE) {
+					Global_Planning(); //Only plan global route at the 1st command receiving 
+				}
+				Path_Planning(); //Create the control points of the AGV for each section 
 				debugLog("Control points generated successfully\n");
-        	}else{
-#if READ_DATA
-				memcpy(&pose.x.bytes[0],&PcData[DataIdx],sizeof(pose.x.f)+sizeof(pose.y.f)+sizeof(pose.theta.f)+sizeof(pose.c_dis.f)+sizeof(pose.f_dis.f)+sizeof(pose.velocity));
-				debugLog("Receiving pose data from PC succeeds - Initial Command\n");
-				uart_Ack2PC(TYPE_ACK, 0);
-				qr_interval = pose.c_dis.f;
-				pose_2final_enc_cnt = 0;
-				//remaining_distance = pose.f_dis.f;
-				remaining_distance = 1.0;
-				if(pose.f_dis.f < 0.01){
-				Calculate_Static_Delta_Distance();}
-				Local_Path_Planning();
-				debugLog("Control points generated successfully\n"); 
-#endif 
-        	}
+				//motion_exec_state = MOTION_INIT;
             break;
 
         case PC_CMDID_ROTATION:
@@ -1779,16 +1781,6 @@ uint8_t Velocity_Process(){
 	return 1;
 }
 
-/************************************************************************************
-FUNCTION		:Refreshing_pose 
-DESCRIPTION		:Refresh the planner pose info by acquiring data 
-INPUT			:None
-OUTPUT			:Success: 1; Fail: 0
-UPDATE			:2023/02/13 
-*************************************************************************************/
-void Refreshing_pose() {
-	Receive_PC_Command();
-}
 
 
 /************************************************************************************
@@ -1899,20 +1891,98 @@ uint8_t uart_Para2PC( ){
 	return 1;
 }
 /************************************************************************************
-FUNCTION		:Local_Path_Planning
+FUNCTION		:x_correction_pid
+DESCRIPTION		:using the pid control to generate the Sn value of each travelling
+INPUT			:pose data from the PC
+OUTPUT			:corrected Sn value for the
+UPDATE			:2023/1/30
+*************************************************************************************/
+float x_correction_pid(float x_ideal, float x_err, float kp, float ki, float kd) {
+	float sampling_time = x_ideal / pose.velocity.linear_v.f;
+	err_sum += x_err;
+	return x_ideal + kp * x_err + (err_sum * ki) / sampling_time; //The PID result of the corrected x
+}
+
+float heading_pid(float heading_err, float kp, float ki, float kd) {
+	heading_err = heading_err * ONE_DEGREE_RADIAN;
+	return heading_err * kp;
+}
+
+
+/************************************************************************************
+FUNCTION		:assign_section_type 
+DESCRIPTION		:assign the section type for each of the sections 
+INPUT			:int section_type 
+OUTPUT			:Success: 1; Fail: 0
+UPDATE			:2023/2/23 
+*************************************************************************************/
+struct design_params assign_section_type(int section_type) {
+	struct design_params _current_params; 
+	switch (section_type)
+	{
+	case ONLY_ONE_METER:
+		_current_params.section_type = ONLY_ONE_METER;
+		_current_params.Sn = x_correction_pid(0.830, pose.x.f, -1.5, 0, 0); //Sn distance (1.055-kp*pose.x.f)
+		_current_params.v_f = 0.0;
+		_current_params.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+		_current_params.jerk_constraint = 3;
+		_current_params.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
+		_current_params.v_s = 0;
+		return _current_params; 
+		break; 
+	case DEC:
+		_current_params.section_type = DEC;
+		_current_params.Sn = x_correction_pid(2.0, pose.x.f, -1.9, 0, 0); //QR distance
+		_current_params.v_f = 0;
+		_current_params.v_max = 0.5; //Current max speed allowed 
+		_current_params.jerk_constraint = 3;
+		_current_params.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
+		_current_params.v_s = pose.velocity.linear_v.f;
+		return _current_params; 
+		break;
+	case MIDDLE:
+		_current_params.section_type = MIDDLE;
+		_current_params.Sn = x_correction_pid(0.830, pose.x.f, -1.9, -0.002, 0); //QR distance
+		_current_params.v_f = pose.velocity.linear_v.f;
+		_current_params.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+		_current_params.jerk_constraint = 3;
+		_current_params.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
+		_current_params.v_s = _current_params.v_f;
+		return _current_params;
+		break; 
+	case START_UP:
+		_current_params.section_type = START_UP;
+		_current_params.Sn = x_correction_pid(0.850, pose.x.f, -1.5, -0.001, 0); //QR distance
+		_current_params.v_f = pose.velocity.linear_v.f;
+		_current_params.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+		_current_params.jerk_constraint = 3;
+		_current_params.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
+		_current_params.v_s = 0;
+		return _current_params; 
+		break; 
+	default:
+		break;
+	}
+}
+
+
+
+
+/************************************************************************************
+FUNCTION		:Path_Planning
 DESCRIPTION		:Based on the pose info from PC, plan local path.
 INPUT			:None
 OUTPUT			:Success: 1; Fail: 0
 UPDATE			:2022/5/20
 *************************************************************************************/
-uint8_t Local_Path_Planning()
+uint8_t Path_Planning()
 {
 	if(Absolute_f(pose.theta.f) > 5.0){
 		cmd_sts = PC_CMDSTS_ABORTED;
 		return 0;
 	}
 	Pose_Init(); 
-	create_section_constraints(); //Create section constraints according to the motion_exec_state and the command
+	create_section_constraints(); //Create the constraints for the current section 
 	Generate_Bezier_Points(pose.x.f, pose.y.f, pose.theta.f, 1.0); //final_distance as reference  ( Current distance ALWAYS 1) 
 	cmd_sts = PC_CMDSTS_INPROGRESS; 
 	return 1;
@@ -1924,14 +1994,23 @@ INPUT			:None
 OUTPUT			:None
 UPDATE			:2022/5/20
 *************************************************************************************/
-void Global_Planning(){
-	uint8_t count = pose.f_dis.f;
-	memset(posecmd_snd, 0,sizeof(posecmd_snd));
-	pose_2final_enc_cnt = 0;	// Initialize to indicate it is first pose command
-	c_1st_dis = pose.c_dis.f;	// First current distance backup
-	Calculate_Static_Delta_Distance();	// Use velocity and deceleration rate to estimate the starting point of STOP
-	for(uint8_t i = 0; i < count; i++){
-		posecmd_snd[i] = QR_INTERVAL_1;
+void Global_Planning(){//Will only be execuated at the beginning of each movement 
+	float total_distance = pose.c_dis.f + pose.f_dis.f; 
+	total_section_count = (int)(total_distance / pose.c_dis.f);
+	if (total_section_count == 1) {
+		global_agv_constraint[0] = assign_section_type(ONLY_ONE_METER);	
+	}
+	else if (total_section_count == 2) {
+		global_agv_constraint[0] = assign_section_type(START_UP);
+		global_agv_constraint[1] = assign_section_type(DEC);
+	}
+	else if (total_section_count > 2) {
+		global_agv_constraint[0] = assign_section_type(START_UP);
+		for (int i = 1; i < total_section_count - 1; i++) {
+			global_agv_constraint[i] = assign_section_type(MIDDLE);
+		}
+		assign_section_type(DEC); 
+		global_agv_constraint[total_section_count - 1] = assign_section_type(DEC);
 	}
 }
 /************************************************************************************
@@ -2424,10 +2503,10 @@ INPUT			:	x_diff: difference of the real x position to the calculated position
 OUTPUT			:	None
 UPDATE			:	2023/1/30 
 *************************************************************************************/
-void calc_control_command(double x_diff, double y_diff, double theta, double theta_goal, double *rho, double *v, double *w) {
+void calc_control_command(float x_diff, float y_diff, float theta, float theta_goal, float *rho, float *v, float *w) {
 	*rho =  hypot(x_diff, y_diff);
-	double alpha = (atan2(y_diff, x_diff) - theta + PI) - (int)((atan2(y_diff, x_diff) - theta + PI) / (2*PI)) * (2*PI);
-	double beta = (theta_goal - theta - alpha + PI) - (int)((theta_goal - theta - alpha + PI) / (2*PI)) * (2*PI);
+	float alpha = (atan2(y_diff, x_diff) - theta + PI) - (int)((atan2(y_diff, x_diff) - theta + PI) / (2*PI)) * (2*PI);
+	float beta = (theta_goal - theta - alpha + PI) - (int)((theta_goal - theta - alpha + PI) / (2*PI)) * (2*PI);
 	*v = Kp_rho * (*rho);
 	*w = Kp_alpha * alpha - Kp_beta * beta;
 	if (alpha > PI / 2 || alpha < -PI / 2) {
@@ -2502,7 +2581,7 @@ INPUT			:a double number
 OUTPUT			:the sign of the number 
 UPDATE			:2023/1/30 
 *************************************************************************************/
-int sgn(double x) { //Returns the sign of the x 
+int sgn(float x) { //Returns the sign of the x 
 	if (x > 0) {
 		return 1;
 	}
@@ -2561,30 +2640,30 @@ UPDATE			:2023/1/30
 struct convolution_params generation_convolute_params(struct design_params param)
 {
 
-	double accleration_constant = param.accleration_constraint;
-	double jerk_constant = param.jerk_constraint;
-	double v_n = param.v_max;
-	double v_i = param.v_s;
-	double v_f = param.v_f;
-	double Sn = param.Sn;
+	float accleration_constant = param.accleration_constraint;
+	float jerk_constant = param.jerk_constraint;
+	float v_n = param.v_max;
+	float v_i = param.v_s;
+	float v_f = param.v_f;
+	float Sn = param.Sn;
 
-	double t2 = accleration_constant / jerk_constant;
-	double t1_star = (v_n - sgn(v_i * v_f) * min(v_i, v_f)) / accleration_constant;
-	double Sn_star = (v_i + v_f) * (t1_star + t2) / 2.0;
+	float t2 = accleration_constant / jerk_constant;
+	float t1_star = (v_n - sgn(v_i * v_f) * min(v_i, v_f)) / accleration_constant;
+	float Sn_star = (v_i + v_f) * (t1_star + t2) / 2.0;
 
-	double t1, t0, v0;
+	float t1, t0, v0, a, b; 
 	//Calculate t1 
 	if (Sn == Sn_star) {
 		t1 = 2 * v_n / accleration_constant;
 	}
 	else if (Sn > Sn_star) {
-		double a = (v_n - v_f) / accleration_constant;
-		double b = (v_n - v_i) / accleration_constant;
+		a = (v_n - v_f) / accleration_constant;
+		b = (v_n - v_i) / accleration_constant;
 		t1 = max(a, b);
 	}
 	else if (Sn < Sn_star) {
-		double a = (v_n + v_f) / accleration_constant;
-		double b = (v_n + v_i) / accleration_constant;
+		a = (v_n + v_f) / accleration_constant;
+		b = (v_n + v_i) / accleration_constant;
 		t1 = max(a, b);
 	}
 
@@ -2616,7 +2695,7 @@ INPUT			:convolution parameters
 OUTPUT			:the sum of t0, t1 and t2 
 UPDATE			:2023/1/30
 *************************************************************************************/
-double travel_time_est(struct convolution_params params) { //Calculate the estimated travel time  
+float travel_time_est(struct convolution_params params) { //Calculate the estimated travel time  
 	return params.t0 + params.t1 + params.t2; 
 } 
 /************************************************************************************
@@ -2626,7 +2705,7 @@ INPUT			:points coordinates
 OUTPUT			:distance
 UPDATE			:2023/1/30
 *************************************************************************************/
-float get_distance(double x1,double y1,double x2,double y2) {
+float get_distance(float x1,float y1,float x2,float y2) {
 	return sqrt(pow((x1 - x2),2) + pow((y1 - y2),2));
 }
 
@@ -2658,86 +2737,71 @@ float theta_correction() {
 
 
 
-/************************************************************************************
-FUNCTION		:x_correction_pid
-DESCRIPTION		:using the pid control to generate the Sn value of each travelling 
-INPUT			:pose data from the PC
-OUTPUT			:corrected Sn value for the 
-UPDATE			:2023/1/30
-*************************************************************************************/
-float x_correction_pid(float  x_ideal,float x_err, float kp, float ki, float kd) {
-	float sampling_time = x_ideal / pose.velocity.linear_v.f; 
-	err_sum += x_err; 
-	return x_ideal + kp * x_err + (err_sum*ki)/sampling_time; //The PID result of the corrected x
-} 
 
-float heading_pid(float heading_err, float kp, float ki, float kd) {
-	heading_err = heading_err * ONE_DEGREE_RADIAN; 
-	return heading_err * kp; 
-}
+
 /************************************************************************************
-FUNCTION		:pose_refreshing 
-DESCRIPTION		:refresh the pose command infomation from the PC 
-INPUT			:pose data from the PC
-OUTPUT			:pose data refreshed
-UPDATE			:2023/1/30
+FUNCTION		:Refreshing_pose
+DESCRIPTION		:Refresh the planner pose info by acquiring data when on 2nd section and beyound
+INPUT			:None
+OUTPUT			:Success: 1; Fail: 0
+UPDATE			:2023/02/13
 *************************************************************************************/
-void pose_refreshing() {
-	memcpy(&pose.x.bytes[0], &PcData[DataIdx], sizeof(pose.x.f) + sizeof(pose.y.f) + sizeof(pose.theta.f) + sizeof(pose.c_dis.f) + sizeof(pose.f_dis.f) + sizeof(pose.velocity));
-	debugLog("Receiving pose data from PC succeeds - Initial Command\n");
+void Refreshing_pose() {
+	if (pose.f_dis.f == 0) {
+		agv_constraint.section_type = DEC;
+		agv_constraint.Sn = x_correction_pid(0.630, pose.x.f, -1.9, -0.002, 0); //QR distance
+		agv_constraint.v_f = 0;
+		agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+		agv_constraint.jerk_constraint = 3;
+		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
+		agv_constraint.v_s = pose.velocity.linear_v.f;
+	}
+	else {
+		agv_constraint.section_type = MIDDLE;
+		agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.9, -0.002, 0); //QR distance
+		agv_constraint.v_f = pose.velocity.linear_v.f;
+		agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+		agv_constraint.jerk_constraint = 3;
+		agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
+		agv_constraint.v_s = agv_constraint.v_f;
+	}
 }
 
 
 /************************************************************************************
 FUNCTION		:create_section_constraints 
-DESCRIPTION		:create constraints for each sections 
-INPUT			:pose command from computer 
+DESCRIPTION		:create constraints for each sections
+INPUT			:isRefreshState: 1:change the motion_exec_state when replanning 
 OUTPUT			:constraints for this section 
 UPDATE			:2023/1/30
 *************************************************************************************/
 
 void create_section_constraints(void) {
 	if (pose.f_dis.f == 0) {
-		if (motion_exec_state == MOTION_IDLE) {
-			//section_type: ONLY_1_METER 
-			if (pose.c_dis.f == 1) {
-				agv_constraint.section_type = ONLY_ONE_METER;
-				agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.5, 0, 0); //Sn distance (1.055-kp*pose.x.f)
-				agv_constraint.v_f = 0;
-				agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
-				agv_constraint.jerk_constraint = 3;
-				agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
-				agv_constraint.v_s = 0;
-				total_distance = pose.f_dis.f + pose.c_dis.f;  //Initize the travelling distance while start up 
-				motion_exec_state = MOTION_INIT;//Starting from standstill 
-			}
-			else if(pose.c_dis.f == 0) {
-				agv_constraint.section_type = SKIPPED;
-				agv_constraint.Sn = 0; 
-				agv_constraint.v_f = 0;
-				agv_constraint.v_max = 0; 
-				agv_constraint.jerk_constraint = 0;
-				agv_constraint.accleration_constraint = 0;
-				agv_constraint.v_s = 0;
-				motion_exec_state = MOTION_START; 
-				total_distance = 0; 
-			}
-			
+		if (total_distance == 0 && motion_exec_state == MOTION_IDLE) {//ONLY ONE METER section 
+			agv_constraint.section_type = ONLY_ONE_METER;
+			agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.5, 0, 0); //Sn distance (1.055-kp*pose.x.f)
+			agv_constraint.v_f = 0.0;
+			agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
+			agv_constraint.jerk_constraint = 3;
+			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
+			agv_constraint.v_s = 0;
+			total_distance = pose.f_dis.f + pose.c_dis.f;  //Initize the travelling distance while start up 
+			motion_exec_state = MOTION_INIT;//Starting from standstill
 		}
-		else if (motion_exec_state == MOTION_ONMOVE) {
+		else if(total_distance != 0 && motion_exec_state == MOTION_ONMOVE) {//DECLERRATE section 
 			agv_constraint.section_type = DEC;
-			agv_constraint.Sn = x_correction_pid(1.5, pose.x.f, -1.9, -0.002, 0); //QR distance
-			agv_constraint.v_f = 0;
-			agv_constraint.v_max = 0.6; //Current max speed allowed 
+			agv_constraint.Sn = x_correction_pid(3.0, pose.x.f, -1.9, -0.002, 0); //QR distance
+			agv_constraint.v_f = 0.05;
+			agv_constraint.v_max = pose.velocity.linear_v.f; //Current max speed allowed 
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_DEC;
 			agv_constraint.v_s = pose.velocity.linear_v.f;
-			motion_exec_state = MOTION_START; //Trigger the movement directly 
+			motion_exec_state = MOTION_START; //Trigger the movement directly
 		} 
 	}
 	else {
-		if (motion_exec_state == MOTION_IDLE) {
-		  //section_type: START_UP
+		if (total_distance == 0 && motion_exec_state == MOTION_IDLE) {//Start up section 
 			agv_constraint.section_type = START_UP;
 			agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.5, -0.001, 0); //QR distance
 			agv_constraint.v_f = pose.velocity.linear_v.f;
@@ -2745,11 +2809,10 @@ void create_section_constraints(void) {
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_1_METER;
 			agv_constraint.v_s = 0;
+			total_distance = pose.c_dis.f + pose.f_dis.f;
 			motion_exec_state = MOTION_INIT;
-			total_distance = pose.c_dis.f + pose.f_dis.f; 
-		} 
-		else if (motion_exec_state == MOTION_ONMOVE) { 
-		//section type: MIDDLE sections 
+		}
+		else {
 			agv_constraint.section_type = MIDDLE;
 			agv_constraint.Sn = x_correction_pid(0.830, pose.x.f, -1.9, -0.002, 0); //QR distance
 			agv_constraint.v_f = pose.velocity.linear_v.f;
@@ -2757,11 +2820,10 @@ void create_section_constraints(void) {
 			agv_constraint.jerk_constraint = 3;
 			agv_constraint.accleration_constraint = ACCERATE_CONSTRAINT_MIDDLE;
 			agv_constraint.v_s = agv_constraint.v_f;
-			motion_exec_state = MOTION_START; 
+			motion_exec_state = MOTION_START;
 		}
 	}
 }
-
 /************************************************************************************
 FUNCTION		:original_profile
 DESCRIPTION		:create the original v0 profile without using the list
@@ -2769,7 +2831,7 @@ INPUT			:split_point1,split_point2,index
 OUTPUT			:the original speed at the given index
 UPDATE			:2022/10/6
 *************************************************************************************/
-float original_profile(index, split_point1, split_point2) {
+float original_profile(int index, int split_point1, int split_point2) {
 	if (index <= split_point1) {
 		return convol_params.v0 - agv_constraint.v_s;
 	}
@@ -2780,6 +2842,26 @@ float original_profile(index, split_point1, split_point2) {
 		return 0;
 	}
 }
+/************************************************************************************
+FUNCTION		:check_distance_change
+DESCRIPTION		:using the 
+INPUT			:split_point1,split_point2,index
+OUTPUT			:the original speed at the given index
+UPDATE			:2022/10/6
+*************************************************************************************/ 
+int check_distance_change() {
+	if (pose.f_dis.f != current_final_distance) {
+		current_final_distance = pose.f_dis.f; 
+		return 1; //final distance is changed by the new command 
+	}
+	else {
+		current_final_distance = pose.f_dis.f; 
+		return 0; 
+	}
+}
+
+
+
 /************************************************************************************
 FUNCTION		:travel_one_section 
 DESCRIPTION		:travel one section after the command is send 
@@ -2797,9 +2879,17 @@ void travel_one_section(int section_count) {
 	point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
 	if (section_count == 0) {
 		last_angle = pose.theta.f; //If the 1st section, using the theta from the PC as the last angle 
-	} //If in the middle section, using the last section's last calculated heading as the last angle 
-	convol_params = generation_convolute_params(agv_constraint);
+	} //If in the middle section, using the last section's last calculated heading as the last angle
+#if GLOBAL_PLANNING 
+	if (total_section_count > 1) {
+		if (section_count == total_section_count - 1) {
+			agv_constraint = assign_section_type(DEC);
+		}
+	}
+#endif 
+	convol_params = generation_convolute_params(agv_constraint); 
 	travel_time = travel_time_est(convol_params);
+	int total_ticks_count = (int)(travel_time*SAMPLES_PER_SECOND);
 	int M1 = (int)(convol_params.t1 * SAMPLES_PER_SECOND);
 	int M2 = (int)(convol_params.t2 * SAMPLES_PER_SECOND);
 	int split_1 = (int)(convol_params.t0 * SAMPLES_PER_SECOND);
@@ -2815,6 +2905,9 @@ void travel_one_section(int section_count) {
 			}
 		}
 		Y1[i] = sum / M1;
+		if (i == split_2) {
+			break; 
+		}
 	}
 
 	int total_points_count = 0;
@@ -2842,13 +2935,18 @@ void travel_one_section(int section_count) {
 		}
 	}
 
-	total_distance = total_distance - 1;
+	
 	float real_time = 0;
 	float T_max = travel_time;
 	int moving_tick = 0;
 	//Moving starts 
 	for (int i = 0; i < total_points_count - 1; i++)
 	{
+		if (check_distance_change() == 1)
+		{
+			Section_End_Process();
+			break; 
+		}
 		moving_tick++;
 		float u = ut[i];
 		float u_next = ut[i + 1];
@@ -2882,204 +2980,39 @@ void travel_one_section(int section_count) {
 			last_angle = target_heading;
 		}
 		last_dtheta2 = dtheta2;
-		//central angular velocity omega
 		ang_vel = dtheta2 / sampling_time;
-		//last_angle = dtheta2; //Saving the last theta value
-		//Robot velocity
 		r_linvel = linear_speed_profile[i];
 		linear_speed_profile[i] = 0;
-		//r_linvel2 = hypot(last_point[0]-point[0], last_point[0]-point[1]);
-		//Update the points information
 		last_point[0] = point[0];
 		last_point[1] = point[1];
 		ut[i] = 0;
+		Y1[i] = 0;
 
 		if (fabs(r_linvel) > MAX_LINEAR_SPEED) {
 			r_linvel = copysign(MAX_LINEAR_SPEED, r_linvel);
+			r_linvel = 0;
 		}
 		if (fabs(ang_vel) > MAX_ANGULAR_SPEED) {
-			//ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
+			ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
+			ang_vel = 0;
 		}
 		Pose_Update();
 		Velocity2Rpm(r_linvel, ang_vel);
+
 		if (Send_Wheel_Command() != 1) {
 			cmd_sts = PC_CMDSTS_ERROR;
 			printf("Wheel command sending error \n");
-			return;
+			break; 
 		}
 
 		cmd_sts = PC_CMDSTS_INPROGRESS;
-		//theta = theta + w * t;
-		real_time = real_time + DELTA_TIME;
-		//int time_interval = (int)(DELTA_TIME*1000);
 		INTERVAL_TIME = (int)(1000 * sampling_time);
-		if (moving_tick == 10) {
-			uart_Data2PC();
-			moving_tick = 0;
-		}
-		if (agv_constraint.section_type == DEC || agv_constraint.section_type == ONLY_ONE_METER) {
-			NV_Pt_On(LED_RED); //Showing the MCU is the last section 
-		}
+		Y1[i] = 0; 
 		HAL_Delay(INTERVAL_TIME);//Delay by the delta_time millisecs. (one delta_time)
 		}
-		HAL_Delay(5);
+		Pose_Update();
 		Section_End_Process();
-		Pose_Update();
 } 
-/************************************************************************************
-FUNCTION		:travel_one_section_new
-DESCRIPTION		:travel one section after the command is send, generate linear speed then publish 
-INPUT			:None
-OUTPUT			:Speed command to the motor controller
-UPDATE			:2023/2/21
-*************************************************************************************/
-void travel_one_section_new(int section_count) {
-	starting_point.x = pose.x.f;
-	starting_point.y = pose.y.f;
-	starting_point.yaw = pose.theta.f * ONE_DEGREE_RADIAN;
-
-	last_point[0] = pose.x.f; //Also the start points 
-	last_point[1] = pose.y.f;
-	point[0] = pose.x.f; point[1] = pose.y.f; //Starting position 
-	if (section_count == 0) {
-		last_angle = pose.theta.f; //If the 1st section, using the theta from the PC as the last angle 
-	} //If in the middle section, using the last section's last calculated heading as the last angle 
-	convol_params = generation_convolute_params(agv_constraint);
-	travel_time = travel_time_est(convol_params);
-	int M1 = (int)(convol_params.t1 * SAMPLES_PER_SECOND);
-	int M2 = (int)(convol_params.t2 * SAMPLES_PER_SECOND);
-	int split_1 = (int)(convol_params.t0 * SAMPLES_PER_SECOND);
-	int split_2 = (int)(travel_time * SAMPLES_PER_SECOND);
-
-	for (int i = 0; i < MAX_POSSIBLE_SIZE; i++) {
-		int start_index = i;
-		int end_index = i - M1 + 1;
-		float sum = 0;
-		for (int j = end_index; j <= start_index; j++) {
-			if (j >= 0 && j < MAX_POSSIBLE_SIZE) {
-				sum += original_profile(j, split_1, split_2);
-			}
-		}
-		Y1[i] = sum / M1;
-	}
-
-	int total_points_count = 0;
-	real_curve_dist = 0; //Initize the curve distance count before a curve begins 
-	//Convolution to create y2 as the linear speed function 
-	for (int i = 0; i < MAX_POSSIBLE_SIZE; i++) {
-		int start_index = i;
-		int end_index = i - M2 + 1;
-		float sum = 0;
-		int p = 0; 
-		for (int j = end_index; j <= start_index; j++) {
-			if (j >= 0 && j < MAX_POSSIBLE_SIZE) {
-				sum += Y1[j];
-			}
-			else {
-				sum += 0;
-			}
-		}
-		linear_speed_profile[i] = sum / M2 + agv_constraint.v_s;
-		real_curve_dist = real_curve_dist + linear_speed_profile[i] * 0.020;
-		ut[i] = real_curve_dist / (agv_constraint.Sn);
-		total_points_count++;
-
-		p = i - 1;
-		if (p >= 1) {
-
-		}
-
-
-
-		if (total_points_count == split_2) {
-			break; //Break when enough amount of velocity command is generated 
-		}
-	}
-
-	total_distance = total_distance - 1;
-	int moving_tick = 0;
-	//Moving starts 
-	for (int i = 0; i < total_points_count - 1; i++)
-	{
-		moving_tick++;
-		float u = ut[i];
-		float u_next = ut[i + 1];
-		bezierCurve(u, point, controlPoints);
-		bezierCurve(u_next, next_point, controlPoints);
-		if (i == 0) {
-			float dx = next_point[0] - pose.x.f;
-			float dy = next_point[1] - pose.y.f;
-			if (dx != 0) {
-				float first_heading = atan(dy / dx);
-				dtheta2 = first_heading - starting_point.yaw;
-				last_angle = first_heading;
-			}
-			else {
-				dtheta2 = 0;
-				last_angle = starting_point.yaw;
-			}//Calculate the theta value
-		}
-		else
-		{
-			float dx = point[0] - next_point[0];
-			float dy = point[1] - next_point[1];
-			float target_heading = last_angle;
-			if (dx != 0) {
-				target_heading = atan(dy / dx);
-			}
-			else {
-				target_heading = last_angle;
-			}
-			dtheta2 = target_heading - last_angle; //Delta in the angle change
-			last_angle = target_heading;
-		}
-		last_dtheta2 = dtheta2;
-		//central angular velocity omega
-		ang_vel = dtheta2 / sampling_time;
-		//last_angle = dtheta2; //Saving the last theta value
-		//Robot velocity
-		r_linvel = linear_speed_profile[i];
-		linear_speed_profile[i] = 0;
-		//r_linvel2 = hypot(last_point[0]-point[0], last_point[0]-point[1]);
-		//Update the points information
-		last_point[0] = point[0];
-		last_point[1] = point[1];
-		ut[i] = 0;
-
-		if (fabs(r_linvel) > MAX_LINEAR_SPEED) {
-			r_linvel = copysign(MAX_LINEAR_SPEED, r_linvel);
-		}
-		if (fabs(ang_vel) > MAX_ANGULAR_SPEED) {
-			//ang_vel = copysign(MAX_ANGULAR_SPEED, ang_vel);
-		}
-		Pose_Update();
-		Velocity2Rpm(r_linvel, ang_vel);
-		if (Send_Wheel_Command() != 1) {
-			cmd_sts = PC_CMDSTS_ERROR;
-			printf("Wheel command sending error \n");
-			return;
-		}
-
-		cmd_sts = PC_CMDSTS_INPROGRESS;
-		//theta = theta + w * t;
-		real_time = real_time + DELTA_TIME;
-		//int time_interval = (int)(DELTA_TIME*1000);
-		INTERVAL_TIME = (int)(1000 * sampling_time);
-		if (moving_tick == 10) {
-			uart_Data2PC();
-			moving_tick = 0;
-		}
-		if (agv_constraint.section_type == DEC || agv_constraint.section_type == ONLY_ONE_METER) {
-			NV_Pt_On(LED_RED); //Showing the MCU is the last section 
-		}
-		HAL_Delay(INTERVAL_TIME);//Delay by the delta_time millisecs. (one delta_time)
-	}
-	HAL_Delay(5);
-	Section_End_Process();
-	Pose_Update();
-}
-
-
 
 /************************************************************************************
 FUNCTION		:Motion_Action
@@ -3102,137 +3035,39 @@ void Motion_Action()
     case MOTION_INIT:
 			Pose_Init();
 			motion_exec_state = MOTION_START;
-			//break;
     case MOTION_START:
 		motion_exec_state = MOTION_ONMOVE; 
-        for(int j=0;j<total_distance;j++)
-		{   
-			travel_one_section(j);
+		int section_count = 0;
+		if (total_section_count == 1) {
+			travel_one_section(0); //Only travels for 1 section 
+		}
+		else {
+			for (section_count = 0; section_count < total_section_count - 1; section_count++) {
+				travel_one_section(section_count); 
+			}
 		}
 	    end_left = left;
 		end_right = right;
 		Pose_Update();
-		NV_Pt_Off(LED_RED);
-		break;
-	case MOTION_DEC: //Post section cleanup of the states
-			/*
-#if ORIGINAL_DEC_PROFILE
-#if LOG_DECK
-	matrix_d_rpm[log_d_i] = motion_dec_speed_l;
-	log_d_i++;
-	matrix_d_rpm[log_d_i] = speed_l;
-	log_d_i++;
-	matrix_d_rpm[log_d_i] = left;
-	log_d_i++;
-	if(log_d_i >= 200){
-		log_d_i = 0;
-	}
-#endif
-#if 1
-				if(x_final >= (pose.c_dis.f * MOTION_LOWER_THRESHOLD) && x_final < (pose.c_dis.f * MOTION_UPPER_THRESHOLD)){
-#else
-				if(Absolute(left - pose_start_enc_cnt) >= (Absolute(pose_2final_enc_cnt) * MOTION_LOWER_THRESHOLD) && Absolute(left - pose_start_enc_cnt) < (Absolute(pose_2final_enc_cnt) * _UPPER_THRESHOLD)){
-#endif
-					if(speed_l <= motion_speedl_dec_step *1.5){
-						Pose_Speed_Init();
-					    motion_exec_state = MOTION_IDLE;
-						cmd_sts = PC_CMDSTS_COMPLETED;
-						end_left = left;
-						end_right = right;
-					}else{
-						motion_dec_speed_l = 0;
-						motion_dec_speed_r = 0;
-					}
-#if 1
-				}else if(x_final < (pose.c_dis.f * MOTION_LOWER_THRESHOLD)){
-#else
-				}else if (Absolute(left - pose_start_enc_cnt) < (Absolute(pose_2final_enc_cnt) * MOTION_LOWER_THRESHOLD)){
-#endif
-					if (motion_dec_speed_l > 0){
-						if(Absolute(motion_dec_speed_l)  > motion_speedl_dec_step){
-							motion_dec_speed_l -= motion_speedl_dec_step;
-							if(Absolute(motion_dec_speed_l) < motion_speedl_dec_step){
-								motion_dec_speed_l = motion_speedl_dec_step;
-							}
-						}
-						else{
-							motion_dec_speed_l = motion_speedl_dec_step;
-						}
-					}else{
-						motion_dec_speed_l = MOTION_STEP_SPEED;
-					}
-					if (motion_dec_speed_r > 0){
-						if(Absolute(motion_dec_speed_r)  > motion_speedr_dec_step)
-						{
-							motion_dec_speed_r -= motion_speedr_dec_step;
-							if(Absolute(motion_dec_speed_r) < motion_speedr_dec_step)
-							{
-								motion_dec_speed_r = motion_speedr_dec_step;
-							}
-						}
-						else{
-							motion_dec_speed_r = motion_speedr_dec_step;
-						}
-					}else{
-						motion_dec_speed_r = MOTION_STEP_SPEED;
-					}
-					cmd_sts = PC_CMDSTS_INPROGRESS;
-				}else{
-						Pose_Speed_Init();
-						motion_exec_state = MOTION_IDLE;
-						cmd_sts = PC_CMDSTS_COMPLETED;
-						end_left = left;
-						end_right = right;
-				}
+		//Not to break intentionally 
+	case MOTION_DEC: //Deccleration of the last section  if in the DEC mode 
+		if (total_section_count == 1) {
+			Pose_Speed_Init();
+			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+			cmd_sts = PC_CMDSTS_COMPLETED;
+			motion_exec_state = MOTION_IDLE;
+			break; 
+		}
+		else {
+			agv_constraint = assign_section_type(DEC); 
+			travel_one_section(total_section_count - 1);
+			Pose_Speed_Init();
+			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+			cmd_sts = PC_CMDSTS_COMPLETED;
+			motion_exec_state = MOTION_IDLE;
+		}
 
-				if (Send_Wheel_Speed(motion_dec_speed_l, motion_dec_speed_r) != 1){
-					printf("Wheel speed sending error \n");
-					cmd_sts = PC_CMDSTS_ERROR;
-					return;
-				}
-*/         
-#if ORIGINAL_SECTION_END_PROCESS 
-			if (agv_constraint.section_type == ONLY_ONE_METER || agv_constraint.section_type == DEC) //This section ends, AGV shall stop 
-                {
-				cmd_sts = PC_CMDSTS_COMPLETED;
-				if (agv_constraint.section_type == DEC) {
-					Refreshing_pose(); //The SKIP section is refreshed 
-					motion_exec_state = MOTION_INIT;
-				}
-				else {
-					Pose_Speed_Init();
-					Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
-					need_to_stop = 1;
-					uart_Data2PC();
-					motion_exec_state = MOTION_IDLE; //AGV stops and change state to MOTION_IDLE 
-				}
-                }
-                else if(agv_constraint.section_type == MIDDLE || agv_constraint.section_type == START_UP)
-                {
-				cmd_sts = PC_CMDSTS_COMPLETED; //Finish of current section 
-				Velocity2Rpm(pose.velocity.linear_v.f, 0); 
-				Refreshing_pose(); 
-				uart_Data2PC();
-				motion_exec_state = MOTION_INIT;
-			     }
-				else if(total_distance == 0) {
-				cmd_sts = PC_CMDSTS_COMPLETED; //SKIPPED section 
-				Pose_Speed_Init();
-				Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
-				Refreshing_pose(); 
-				uart_Data2PC();
-				motion_exec_state = MOTION_IDLE;
-			    }
-#endif 
-			if (Send_Wheel_Speed(pose.velocity.linear_v.f, pose.velocity.angular_v.f) != 1) {
-				printf("Wheel speed sending error \n");
-				cmd_sts = PC_CMDSTS_ERROR;
-				return;
-			} 
-			end_left = left;
-			end_right = right;
-			Pose_Update();
-			break;
+
 
 	case MOTION_PAUSE:
 			Calculate_Deceleration_Info();
@@ -3422,27 +3257,17 @@ UPDATE			:2023/2/13
 *************************************************************************************/
 void Section_End_Process() {
 	if (pose.f_dis.f != 0) {
-		motion_exec_state = MOTION_ONMOVE; 
-		cmd_sts = PC_CMDSTS_INPROGRESS; 
-		uart_Data2PC(); 
+		//motion_exec_state = MOTION_ONMOVE; 
 	}
 	else if (pose.f_dis.f == 0) {
-		if (agv_constraint.section_type == ONLY_ONE_METER) {
-			cmd_sts = PC_CMDSTS_COMPLETED;
-			uart_Data2PC();
-			Pose_Speed_Init();
-			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+		if (current_section_constraint.section_type == ONLY_ONE_METER) {
 			motion_exec_state = MOTION_IDLE;
-			//NV_Pt_Off(LED_RED);
+			Velocity2Rpm(0, 0); 
 		}
-		else if(agv_constraint.section_type == DEC) {
-			cmd_sts = PC_CMDSTS_COMPLETED;
-			uart_Data2PC();
-			Pose_Speed_Init();
-			Velocity2Rpm(pose.velocity.linear_v.f, pose.velocity.angular_v.f);
+		else if(current_section_constraint.section_type == DEC) {
 			motion_exec_state = MOTION_IDLE;
+			Velocity2Rpm(0, 0); 
 		}
-		//NV_Pt_Off(LED_RED);
 	}
 }
 /************************************************************************************
@@ -3457,6 +3282,9 @@ void Pose_Speed_Init(){
 	motion_dec_speed_r = 0;
 	pose.velocity.linear_v.f = 0;
 	pose.velocity.angular_v.f = 0;
+	total_distance = 0; 
+	pose.c_dis.f = 0; 
+	pose.f_dis.f = 0; 
 }
 /************************************************************************************
 FUNCTION		:Configure_Motor_SpeedPositionmode
