@@ -41,7 +41,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+int hard_fault_triggered = 0; 
+int hard_fault_waiting_ticks = 2000; 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -93,11 +94,17 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+    hard_fault_triggered = 1; 
+    int i = 0; 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
     /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+      hard_fault_triggered = 1;
+      i++; 
+      if (i > hard_fault_waiting_ticks) {
+          break; 
+      }
     /* USER CODE END W1_HardFault_IRQn 0 */
   }
 }

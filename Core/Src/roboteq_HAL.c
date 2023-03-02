@@ -199,7 +199,7 @@ float y_th = 0.010;
 float last_travelling_time;
 float err_sum; 
 float real_curve_dist; 
-float ut[650];//ut list for the bezier curve
+float ut[800];//ut list for the bezier curve
 float sampling_time = 0.020; 
 int need_to_stop = 0;
 float total_distance = 0; 
@@ -291,6 +291,14 @@ struct{
 float2int deck_rotation_angle;
 
 uint8_t lifter_updn;
+
+struct mag_nav {
+	float2int travel_distance; 
+	uint8_t start; 
+};
+
+struct mag_nav magetic_nav; 
+float2int dist; 
 
 float2int current_deck_pos;
 
@@ -522,6 +530,7 @@ void Deck_Action();
 void Body_Action();
 void Lifter_Action();
 void Motion_Action();
+void Magnetic_nav_handler(); 
 int32_t Absolute(int32_t value);
 float Absolute_f(float value);
 uint8_t isCmdConfirmed (int32_t Timeout);
@@ -802,7 +811,7 @@ void Send_Querydata2PC()
 		refresh_count++;
 		if(refresh_count >= motorpara.refresh_rate){
 			refresh_count = 0;
-			//uart_Data2PC();
+			uart_Data2PC();
 		}
 #if ENABLE_PC_STATUS_REQ
 		motor_deck_status_bytes = 0;
@@ -1742,6 +1751,14 @@ void Pc_Cmd_Process(){
 			debugLog("Receiving Deck Up/down info from PC succeeds\n");
 			Lifter_Updown();
             break;
+
+		case PC_CMDID_MAGNETIC_NAV: 
+			magetic_nav.start = 0; 
+			memcpy(&dist.bytes[0], &PcData[DataIdx], sizeof(dist.f)); 
+			magetic_nav.travel_distance = dist; 
+			debugLog("Receiving navigation info from PC succeeds\n");
+			Magnetic_nav_handle(); 
+			break; 
 
         default:
 			debugLog("Wrong command\n");
@@ -2982,10 +2999,10 @@ void travel_one_section(int section_count) {
 		last_dtheta2 = dtheta2;
 		ang_vel = dtheta2 / sampling_time;
 		r_linvel = linear_speed_profile[i];
-		linear_speed_profile[i] = 0;
+		//linear_speed_profile[i] = 0;
 		last_point[0] = point[0];
 		last_point[1] = point[1];
-		ut[i] = 0;
+		//ut[i] = 0;
 		Y1[i] = 0;
 
 		if (fabs(r_linvel) > MAX_LINEAR_SPEED) {
@@ -4463,7 +4480,9 @@ uint8_t Read_Wheel_Fault_Flag(){
 	{
 		return 0;
 	}
-	return 1;
+	else {
+		return 1;
+	}
 }
 /************************************************************************************
 FUNCTION		:Lifter_Updown
@@ -5007,6 +5026,44 @@ void Current_Cmd_Update(){
 			debugLog("Wrong command\n");
     }
 }
+/************************************************************************************
+FUNCTION		:Magnetic_nav_handler
+DESCRIPTION		:Handles the data from the magnetic sensor and the PC controller 
+INPUT			:None
+OUTPUT			:None
+UPDATE			:2022/3/2
+*************************************************************************************/
+void Magnetic_nav_handler() {
+	cmd_sts = PC_CMDSTS_INPROGRESS; 
+	if (magetic_nav.start == 1) {
+		motion_exec_state = MOTION_START;
+		NV_Pt_On(LED_ORG); 
+		//Travelling of the AGV 
+		//deccleration of the AGV at destinated markers
+	}
+	else {
+		NV_Pt_Off(LED_ORG); 
+	}
+
+}
+/************************************************************************************
+FUNCTION		:Magnetic_steering_corrector
+DESCRIPTION		:Based on the magnetic
+INPUT			:None
+OUTPUT			:None
+UPDATE			:2022/3/2 
+*************************************************************************************/
+void Magnetic_steering_corrector(float linear_spd, float ang_speed, float mag_readings) {
+	float middle_ref = 50; 
+	float diff = mag_readings - middle_ref; 
+	if (diff > 0) {
+		//AGV is veer off to right 
+
+	}
+	else {
+		//AGV is veer off to left 
+	}
+}
 
 /************************************************************************************
 FUNCTION		:Action_Cmd_Process
@@ -5033,6 +5090,21 @@ void Action_Cmd_Process(){
         		}
         	}
             break;
+
+		case PC_CMDID_MAGNETIC_NAV:
+			if (motion_exec_state != 0) {
+				if (action_sts == PC_ACTIONSTS_PAUSE) {
+					bk_motion_exec_state = motion_exec_state;
+					motion_exec_state = MOTION_PAUSE;
+				}
+				else if (action_sts == PC_ACTIONSTS_RESUME) {
+					motion_exec_state = MOTION_RESUME;
+				}
+				else if (action_sts == PC_ACTIONSTS_ABORTED) {
+					motion_exec_state = MOTION_ABORTED;
+				}
+			}
+			break;
 
         case PC_CMDID_ROTATION:
 #if ENABLE_WHEEL_R_RESUME
@@ -5168,4 +5240,14 @@ void Reset_Encoder_Count(){
 	rmult = 0;
 	left = 1;
 	right = 1;
+}
+/************************************************************************************
+FUNCTION		:HardFault_Encounter 
+DESCRIPTION		:Lit the RED LED to show the 
+INPUT			:None
+OUTPUT			:None
+UPDATE			:2022/11/04
+*************************************************************************************/
+void HardFault_Encounter(){
+	NV_Pt_On(LED_RED);
 }
