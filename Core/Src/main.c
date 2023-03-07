@@ -162,7 +162,7 @@ void StartIOControlTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 extern uint8_t Roboteq_Init (void);
-
+extern void Sending_Data2Pc_callback(int interval_rate);
 extern uint8_t Pc_Init();
 extern uint8_t Deck_Init();
 extern void IO_Control();
@@ -171,6 +171,8 @@ extern void Send_Querydata2PC();
 extern void Receive_PC_Command();
 extern void Led_Green();
 /* USER CODE END PFP */
+void TIM1_IC_INT(TIM_HandleTypeDef* htim);
+int MagTapePos(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */

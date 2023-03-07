@@ -65,9 +65,10 @@ extern UART_HandleTypeDef huart4;
 extern UART_HandleTypeDef huart7;
 extern UART_HandleTypeDef huart8;
 extern TIM_HandleTypeDef htim6;
+extern TIM_HandleTypeDef htim1;
 
 /* USER CODE BEGIN EV */
-
+extern void TIM1_IC_INT(TIM_HandleTypeDef* htim);
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -258,6 +259,18 @@ void UART4_IRQHandler(void)
   /* USER CODE END UART4_IRQn 1 */
 }
 
+
+void TIM1_CC_IRQHandler(void)
+{
+    /* USER CODE BEGIN TIM1_CC_IRQn 0 */
+    //TIM1_IC_INT(&htim1);
+    return;
+    /* USER CODE END TIM1_CC_IRQn 0 */
+  //  HAL_TIM_IRQHandler(&htim1);
+    /* USER CODE BEGIN TIM1_CC_IRQn 1 */
+
+    /* USER CODE END TIM1_CC_IRQn 1 */
+}
 /**
   * @brief This function handles TIM6 global interrupt, DAC1 and DAC2 underrun error interrupts.
   */
@@ -299,6 +312,8 @@ void UART8_IRQHandler(void)
 
   /* USER CODE END UART8_IRQn 1 */
 }
+
+
 
 /* USER CODE BEGIN 1 */
 

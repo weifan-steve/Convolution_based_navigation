@@ -7,6 +7,7 @@ DESCRIPTION		:roboteq control functions
 #include "stm32f4xx_hal.h"
 #include "uartRingBufDMA.h"
 #include "roboteq_HAL.h"
+//#include "magnetic_navigation.h"
 #include "stdio.h"
 #include "string.h"
 #include "main.h"
@@ -191,6 +192,8 @@ int INTERVAL_TIME;
 float ACCERATE_CONSTRAINT_1_METER = 1.4;
 float ACCERATE_CONSTRAINT_MIDDLE = 0.10; 
 float ACCERATE_CONSTRAINT_DEC = 0.2; 
+float MAG_NAV_BASE_SPEED = 0.3; 
+float MAG_NAV_BASE_ROT_SPEED = 0.0; 
 float kp = -1.0; 
 float ki = 0.0;
 float kd = 0.0;
@@ -265,6 +268,7 @@ struct points {
 };
 
 struct pos pose;
+struct points current_location; 
 
 struct velo velocity;
 struct velo correction_velocity;
@@ -595,7 +599,8 @@ extern void Ringbuf_Init (void);
 void Global_Planning();
 void Led_Status_display();
 void upload_status_to_pc(int interval); 
-extern uint8_t waitFor (char *string, uint32_t Timeout);
+extern uint8_t waitFor (char *string, uint32_t Timeout); 
+void Sending_Data2Pc_callback(int interval_rate); 
 int BEZIER_ORDER=3;
 float controlPoints [4];
 float ang_vel = 0.0, ang_vel2 = 0.0;
@@ -603,6 +608,7 @@ float r_linvel;
 float point[2];
 float last_point[2];
 float dtheta,dtheta2, last_dtheta2;
+int count = 0;
 #if DEBUG_MODE_ON 
 float Angveldebug[300];
 float Linveldebug[300];
@@ -811,7 +817,7 @@ void Send_Querydata2PC()
 		refresh_count++;
 		if(refresh_count >= motorpara.refresh_rate){
 			refresh_count = 0;
-			uart_Data2PC();
+			uart_Data2PC(); 
 		}
 #if ENABLE_PC_STATUS_REQ
 		motor_deck_status_bytes = 0;
@@ -1754,10 +1760,12 @@ void Pc_Cmd_Process(){
 
 		case PC_CMDID_MAGNETIC_NAV: 
 			magetic_nav.start = 0; 
-			memcpy(&dist.bytes[0], &PcData[DataIdx], sizeof(dist.f)); 
-			magetic_nav.travel_distance = dist; 
+			memcpy(&magetic_nav.travel_distance.bytes[0], &PcData[DataIdx], sizeof(magetic_nav.travel_distance.f) + sizeof(magetic_nav.start)); 
 			debugLog("Receiving navigation info from PC succeeds\n");
-			Magnetic_nav_handle(); 
+			if (magetic_nav.travel_distance.f > 0) {
+				NV_Pt_On(LED_RED); 
+			}
+			Magnetic_nav_handler();
 			break; 
 
         default:
@@ -2330,7 +2338,13 @@ void Pose_Update(){
 	if (th != 0){
 	  theta_final = theta_final + th;
 	}
-	then = now;
+	then = now;  
+
+	current_location.x = x_final; 
+	current_location.y = y_final; 
+	current_location.yaw = theta_final; 
+
+	
 #if ENABLE_POSE_AUTO_4M
 	if(x_final > 2.1 && is1stPosepass == 0){
 		is1stPosepass = 1;
@@ -2997,8 +3011,8 @@ void travel_one_section(int section_count) {
 			last_angle = target_heading;
 		}
 		last_dtheta2 = dtheta2;
-		ang_vel = dtheta2 / sampling_time;
-		r_linvel = linear_speed_profile[i];
+		velocity.angular_v.f = dtheta2 / sampling_time;
+		velocity.linear_v.f = linear_speed_profile[i];
 		//linear_speed_profile[i] = 0;
 		last_point[0] = point[0];
 		last_point[1] = point[1];
@@ -3014,7 +3028,7 @@ void travel_one_section(int section_count) {
 			ang_vel = 0;
 		}
 		Pose_Update();
-		Velocity2Rpm(r_linvel, ang_vel);
+		Velocity_Process();
 
 		if (Send_Wheel_Command() != 1) {
 			cmd_sts = PC_CMDSTS_ERROR;
@@ -5035,16 +5049,33 @@ UPDATE			:2022/3/2
 *************************************************************************************/
 void Magnetic_nav_handler() {
 	cmd_sts = PC_CMDSTS_INPROGRESS; 
-	if (magetic_nav.start == 1) {
-		motion_exec_state = MOTION_START;
-		NV_Pt_On(LED_ORG); 
-		//Travelling of the AGV 
-		//deccleration of the AGV at destinated markers
-	}
-	else {
-		NV_Pt_Off(LED_ORG); 
-	}
+	motion_exec_state = MOTION_START; 
+	float distance_to_move = magetic_nav.travel_distance.f; 
+	float move_time = distance_to_move / MAG_NAV_BASE_SPEED; 
+	int time_count = (int)(move_time / 0.05); //Interval 0.05 secs 
+	float x_before_moving = current_location.x; 
 
+	for (int i = 0; i < time_count; i++) { 
+		Pose_Update();  
+		velocity.linear_v.f = MAG_NAV_BASE_SPEED; 
+		velocity.angular_v.f = MAG_NAV_BASE_ROT_SPEED; 
+		//velocity.angular_v.f = calculate_rot_speed(magnetic_reading, 50);
+		Velocity_Process(); 
+		Pose_Update(); 
+		if (current_location.x - x_before_moving > distance_to_move) {
+			break; 
+		}
+		HAL_Delay(50); 
+	} 
+
+	velocity.linear_v.f = 0;
+	velocity.angular_v.f = 0;
+	Velocity_Process(); 
+	motion_exec_state = MOTION_IDLE; 
+	cmd_sts = PC_CMDSTS_COMPLETED; 
+	NV_Pt_Off(LED_RED);
+	
+	
 }
 /************************************************************************************
 FUNCTION		:Magnetic_steering_corrector
@@ -5243,11 +5274,66 @@ void Reset_Encoder_Count(){
 }
 /************************************************************************************
 FUNCTION		:HardFault_Encounter 
-DESCRIPTION		:Lit the RED LED to show the 
+DESCRIPTION		:Lit the RED LED to show the hard fault happened
 INPUT			:None
 OUTPUT			:None
-UPDATE			:2022/11/04
+UPDATE			:2023/3/3
 *************************************************************************************/
 void HardFault_Encounter(){
 	NV_Pt_On(LED_RED);
+}
+
+
+/************************************************************************************
+FUNCTION		:Sending_Data2Pc_callback
+DESCRIPTION		:TIM callback to send data back to PC side 
+INPUT			:None
+OUTPUT			:None
+UPDATE			:2023/3/3
+*************************************************************************************/
+void Sending_Data2Pc_callback(int interval_rate) {
+	count++;
+	if (count > interval_rate) {
+		uart_Data2PC(); 
+		count = 0; 
+	}
+}
+
+//Magnetic tape related function 
+
+void SelMagSenseFwd(void)
+{
+	HAL_GPIO_WritePin(GPIOF, DIRSEL_Pin, GPIO_PIN_RESET);
+}
+
+void SelMagSenseBwd(void)
+{
+	HAL_GPIO_WritePin(GPIOF, DIRSEL_Pin, GPIO_PIN_SET);
+}
+
+void ForkRight(void)
+{
+	HAL_GPIO_WritePin(GPIOF, LEFTSEL_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOF, RIGHTSEL_Pin, GPIO_PIN_SET);
+}
+
+void ForkLeft(void)
+{
+	HAL_GPIO_WritePin(GPIOF, LEFTSEL_Pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(GPIOF, RIGHTSEL_Pin, GPIO_PIN_RESET);
+}
+
+void NoFork(void)
+{
+	HAL_GPIO_WritePin(GPIOF, LEFTSEL_Pin, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOF, RIGHTSEL_Pin, GPIO_PIN_RESET);
+}
+
+int MagTapePos(void)
+{
+	int Duty = 0;
+	if (HAL_GPIO_ReadPin(GPIOE, TRACKDET_Pin) != GPIO_PIN_RESET)
+		return Duty;
+	else
+		return 0;
 }
